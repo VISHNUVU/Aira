@@ -9,22 +9,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Apple Silicon inference + on-device QLoRA training:
+# Apple Silicon inference + on-device QLoRA training.
 #
-# transformers is pinned exactly (not just floored) — mlx-lm's own installed
-# version breaks on transformers>=5.1 (`AutoTokenizer.register` signature
-# changed: `AttributeError: 'str' object has no attribute '__module__'`).
-# mlx-vlm/mlx-audio declare a *floor* of transformers>=5.5, which looks like
-# a conflict, but they've been verified working fine against 5.0.0 in
-# practice — that floor is just untested-but-not-actually-required. Without
-# this exact pin, a plain `pip install -e .` picks the newest transformers
-# and silently breaks mlx_lm imports.
+# mlx-vlm is NOT listed here on purpose, even though it's load-bearing for
+# unified/multimodal Gemma checkpoints (engine/mlx_driver.py routes those
+# through it). Its declared metadata wants transformers>=5.5, but mlx-lm
+# breaks on anything past transformers==5.0.0 (`AutoTokenizer.register`
+# signature changed: `AttributeError: 'str' object has no attribute
+# '__module__'`) — verified 5.0.0 works fine with mlx-vlm in practice
+# despite its stated floor. Declaring both in one extras group makes pip's
+# resolver see an unsatisfiable conflict and refuse the whole install
+# (confirmed: this silently produced a lean/fake-only build once already).
+# scripts/build-macos.sh installs mlx-vlm as a separate `--no-deps` step and
+# force-pins transformers afterward — imperative steps pip can't "refuse"
+# the way it can a single declarative resolve.
 mlx = [
     "mlx>=0.18",
     "mlx-lm>=0.19",
     "mlx-embeddings>=0.0.3",
-    "mlx-vlm>=0.6",
-    "transformers==5.0.0",
 ]
 # Cross-platform inference (Windows / Linux / mobile):
 llamacpp = [

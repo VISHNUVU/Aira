@@ -60,15 +60,39 @@ python -m pip install --upgrade pip >/dev/null
 # Try progressively narrower extras so one broken/unavailable package (e.g.
 # kokoro not yet supporting a new Python release) doesn't sacrifice the real
 # MLX backend — only degrade voice, or as a last resort the whole backend.
+HAVE_MLX=0
 if pip install -e ".[mlx,memory,voice]" >/dev/null 2>&1; then
   ok "installed sidecar with full backend (mlx, memory, voice)"
+  HAVE_MLX=1
 elif pip install -e ".[mlx,memory]" >/dev/null 2>&1; then
   echo "  voice extras unavailable (e.g. kokoro doesn't support this Python yet) — keeping mlx+memory, TTS falls back to macOS 'say'"
   ok "installed sidecar with mlx + memory backend (no neural voice)"
+  HAVE_MLX=1
 else
   echo "  full backend install failed — building lean sidecar (fake/say engines)"
   pip install -e ".[dev]" >/dev/null 2>&1 || pip install -e "." >/dev/null 2>&1 || true
   ok "installed sidecar (lean)"
+fi
+
+# mlx-vlm (unified/multimodal Gemma checkpoints — the 12B and e4b chat
+# models both need it) and mlx-audio (offline Whisper dictation) are
+# installed as separate `--no-deps` steps, not declared in pyproject.toml's
+# `mlx` extra: both declare transformers>=5.5, but mlx-lm breaks on
+# anything past transformers==5.0.0, and putting both constraints in one
+# `pip install -e .[...]` resolve makes pip refuse the whole install as
+# unsatisfiable (confirmed — this silently shipped a lean/fake-only build
+# once already). --no-deps sidesteps that; the explicit re-pin after
+# corrects transformers back down regardless of what got pulled in.
+if [[ "$HAVE_MLX" == "1" ]]; then
+  echo "  installing mlx-vlm + mlx-audio (chat for unified checkpoints + offline dictation)"
+  if pip install --no-deps "mlx-vlm>=0.6" "mlx-audio>=0.4" >/dev/null 2>&1; then
+    ok "installed mlx-vlm + mlx-audio"
+  else
+    echo "  WARNING: mlx-vlm/mlx-audio install failed — 12B/e4b chat and mic dictation will not work in this build"
+  fi
+  pip install -q "transformers==5.0.0" >/dev/null 2>&1
+  pip uninstall -y hf-xet >/dev/null 2>&1 || true
+  ok "pinned transformers==5.0.0 (mlx_lm compat), removed hf-xet (reliable download progress)"
 fi
 pip install "pyinstaller>=6" >/dev/null
 ok "PyInstaller ready"
