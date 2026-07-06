@@ -58,8 +58,14 @@ def collect_optional(pkg, submodules=True, data=False):
 
 
 # Apple-Silicon inference + on-device QLoRA (only present in a full build):
-for _p in ("mlx", "mlx_lm", "mlx_embeddings"):
+# mlx_vlm is required for unified/multimodal Gemma checkpoints (e.g. the 12B
+# and e4b mlx-community exports both declare vision_config/audio_config, so
+# mlx_driver.py routes them through mlx_vlm, not plain mlx_lm — see
+# engine/mlx_driver.py's _is_multimodal_checkpoint()).
+for _p in ("mlx", "mlx_lm", "mlx_vlm", "mlx_embeddings"):
     collect_optional(_p, data=True)
+# Offline speech-to-text (mic button dictation, Whisper via mlx_audio):
+collect_optional("mlx_audio", data=True)
 # RAG vector store:
 for _p in ("lancedb", "pyarrow"):
     collect_optional(_p, data=True)
@@ -71,6 +77,19 @@ collect_optional("llama_cpp", data=True)
 
 # numpy is a hard dependency — make sure all of it comes along.
 hiddenimports.extend(collect_submodules("numpy"))
+
+# Update-check token (read-only, single-repo-scoped fine-grained GitHub PAT).
+# Bundled as data so the frozen app can check for new releases without the
+# end user needing to configure anything. Never committed to git — see
+# .gitignore. Missing gracefully: update_checker.py treats no-file as
+# "update checks disabled", it doesn't fail the build or the app.
+import os as _os
+_token_path = _os.path.join(_os.path.dirname(_os.path.abspath(SPEC)), ".update_token")
+if _os.path.isfile(_token_path):
+    datas.append((_token_path, "."))
+    print("[aria-sidecar.spec] bundling .update_token")
+else:
+    print("[aria-sidecar.spec] no .update_token found — update checks will be disabled in this build")
 
 
 a = Analysis(

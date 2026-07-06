@@ -41,8 +41,15 @@ from eval_gate import EvalGate, EmbeddingSimilarityEvaluator
 from tools import default_registry
 from speech import SpeechManager
 from stt import SttEngine
+from update_checker import UpdateChecker
 
 ARIA_HOME = os.path.expanduser(os.environ.get("ARIA_HOME", "~/.aria"))
+
+# Single source of truth for the shipped version — keep in lockstep with
+# src-tauri/tauri.conf.json's "version" (that one drives the actual .app
+# bundle Info.plist; this one is what the running sidecar reports and
+# compares against GitHub releases for update checks).
+APP_VERSION = "0.1.0"
 
 # HF repo mapping (documented in ARCHITECTURE.md)
 MODEL_CATALOG = {
@@ -153,8 +160,10 @@ class SidecarService:
         )
         # speech-to-text: offline dictation for the chat composer's mic button
         self.stt = _MLXThreadProxy(SttEngine(), self._gpu_executor)
+        self.updater = UpdateChecker(APP_VERSION)
         self._loaded = False
         self._downloads: dict = {}   # model_id -> {status, downloaded_bytes, total_bytes, percent, error}
+        self._update_download: dict = {}  # {status, downloaded_bytes, total_bytes, path, error}
 
     # ---- lifecycle -------------------------------------------------------
     def load_model(self, model_id: str = "gemma-4-12b") -> dict:
@@ -427,6 +436,40 @@ class SidecarService:
             except OSError:
                 pass
 
+    # ---- app updates -------------------------------------------------------
+    def update_check(self) -> dict:
+        return self.updater.check()
+
+    def update_download(self, asset_api_url: str, asset_name: str) -> dict:
+        """Kicks off a background download of a release asset to ~/Downloads
+        and returns immediately — same non-blocking pattern as model
+        downloads. Poll via update_download_progress()."""
+        if self._update_download.get("status") == "downloading":
+            return {"ok": True, "started": True, "already_running": True}
+
+        dest = os.path.join(os.path.expanduser("~/Downloads"), asset_name)
+        self._update_download = {
+            "status": "downloading", "downloaded_bytes": 0,
+            "total_bytes": 0, "path": None, "error": None,
+        }
+
+        def _progress(downloaded: int, total: int) -> None:
+            self._update_download["downloaded_bytes"] = downloaded
+            self._update_download["total_bytes"] = total
+
+        def _run() -> None:
+            try:
+                path = self.updater.download(asset_api_url, dest, progress_cb=_progress)
+                self._update_download.update(status="done", path=path)
+            except Exception as e:
+                self._update_download.update(status="error", error=str(e))
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "started": True}
+
+    def update_download_progress(self) -> dict:
+        return self._update_download or {"status": "idle"}
+
     def chat_speak(self, messages: list[dict], use_memory: bool = True,
                    use_tools: bool = True, max_tokens: int = 512,
                    voice: Optional[str] = None,
@@ -510,6 +553,12 @@ def _route(service: SidecarService, method: str, path: str,
             return 200, service.stt_status()
         if path == "/transcribe" and method == "POST":
             return 200, service.transcribe(body["audio_b64"], mime=body.get("mime", "audio/wav"))
+        if path == "/update/check":
+            return 200, service.update_check()
+        if path == "/update/download" and method == "POST":
+            return 200, service.update_download(body["asset_api_url"], body["asset_name"])
+        if path == "/update/download/progress":
+            return 200, service.update_download_progress()
         if path == "/chat/speak" and method == "POST":
             return 200, service.chat_speak(body.get("messages", []),
                                            use_memory=body.get("use_memory", True),

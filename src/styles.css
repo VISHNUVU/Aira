@@ -330,6 +330,16 @@ button { font-family: inherit; }
 #about-card .row { display: flex; justify-content: space-between; color: var(--text-secondary); }
 #about-card .row b { color: var(--text); font-weight: 600; }
 
+#update-card { margin: 0 20px 16px; padding: 10px 14px; border-radius: var(--radius-sm);
+  background: var(--panel-2); font-size: 12.5px; }
+#update-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#update-status { color: var(--text-secondary); }
+#update-status.available { color: var(--accent); font-weight: 600; }
+#update-action { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+#update-notes { font-size: 11.5px; color: var(--text-secondary); white-space: pre-wrap; max-height: 80px; overflow-y: auto; }
+#update-progress-bar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+#update-progress-bar > i { display: block; height: 100%; background: var(--accent); transition: width var(--dur-fast) linear; }
+
 /* ---- generic content inside settings ---- */
 .view-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 10px; }
 .view-head h1 { font-size: 17px; font-weight: 650; }

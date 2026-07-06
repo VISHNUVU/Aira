@@ -24,6 +24,9 @@ python-sidecar/dist/
 node_modules/
 dist/
 
+# Secrets — never commit
+python-sidecar/.update_token
+
 # App data (never commit user data or weights)
 .aria/
 *.gguf

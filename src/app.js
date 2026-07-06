@@ -6,6 +6,10 @@
 // running the UI in a plain browser (no Tauri), we fall back to the fixed dev
 // port 8765 so `npm run dev` + `python app.py --port 8765` just works.
 let API = (window.__ARIA_API__ || "http://127.0.0.1:8765");
+// Keep in lockstep with python-sidecar/app.py's APP_VERSION and
+// src-tauri/tauri.conf.json's "version" — shown when update checks are
+// disabled (e.g. a dev build with no bundled .update_token).
+const APP_VERSION_FALLBACK = "0.1.0";
 
 // ---- tiny helpers --------------------------------------------------------
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -865,6 +869,7 @@ function switchSettingsView(name) {
 function openSettings(view) {
   $("#settings-overlay").classList.add("open");
   switchSettingsView(view || currentSettingsView);
+  checkForUpdates();
 }
 function closeSettings() { $("#settings-overlay").classList.remove("open"); }
 
@@ -874,6 +879,91 @@ function wireSettings() {
   $("#settings-overlay").addEventListener("click", e => { if (e.target.id === "settings-overlay") closeSettings(); });
   document.querySelectorAll(".settings-tab").forEach(b =>
     b.addEventListener("click", () => switchSettingsView(b.dataset.view)));
+  $("#update-check-btn").addEventListener("click", checkForUpdates);
+}
+
+// ==========================================================================
+// APP UPDATES — check + download, manual install (see update_checker.py
+// for why this isn't a fully silent auto-updater: private-repo releases
+// need an authenticated two-step fetch the standard Tauri updater can't do)
+// ==========================================================================
+let lastUpdateCheck = null;
+
+async function checkForUpdates() {
+  const statusEl = $("#update-status");
+  const actionEl = $("#update-action");
+  const btn = $("#update-check-btn");
+  btn.disabled = true; btn.textContent = "Checking…";
+  actionEl.style.display = "none"; actionEl.innerHTML = "";
+
+  let r;
+  try {
+    r = await api("/update/check");
+  } catch {
+    statusEl.textContent = "Couldn't check for updates";
+    btn.disabled = false; btn.textContent = "Check for Updates";
+    return;
+  }
+  lastUpdateCheck = r;
+  btn.disabled = false; btn.textContent = "Check for Updates";
+
+  if (!r.enabled) {
+    statusEl.textContent = `Aria v${APP_VERSION_FALLBACK}`;
+    return;
+  }
+  if (!r.ok) {
+    statusEl.textContent = "Update check failed: " + (r.error || "unknown error");
+    return;
+  }
+  if (!r.update_available) {
+    statusEl.classList.remove("available");
+    statusEl.textContent = `Aria v${r.current_version} — up to date`;
+    return;
+  }
+
+  statusEl.classList.add("available");
+  statusEl.textContent = `Update available: v${r.latest_version}`;
+  actionEl.style.display = "flex";
+  const dlBtn = el("button", { class: "btn small" }, `Download v${r.latest_version}`);
+  const notes = r.notes ? el("div", { id: "update-notes" }, r.notes) : null;
+  dlBtn.addEventListener("click", () => downloadUpdate(r, dlBtn, actionEl));
+  actionEl.append(dlBtn);
+  if (notes) actionEl.append(notes);
+}
+
+async function downloadUpdate(check, dlBtn, actionEl) {
+  dlBtn.disabled = true; dlBtn.textContent = "Starting…";
+  try {
+    await api("/update/download", "POST", {
+      asset_api_url: check.asset_api_url, asset_name: check.asset_name,
+    });
+  } catch { dlBtn.textContent = "Failed to start"; return; }
+
+  const bar = el("div", { id: "update-progress-bar" }, el("i", { style: "width:0%" }));
+  actionEl.prepend(bar);
+
+  await new Promise(resolve => {
+    const tick = async () => {
+      let p;
+      try { p = await api("/update/download/progress"); } catch { resolve(); return; }
+      const pct = p.total_bytes ? Math.round(100 * p.downloaded_bytes / p.total_bytes) : 0;
+      bar.querySelector("i").style.width = pct + "%";
+      dlBtn.textContent = `Downloading… ${pct}%`;
+      if (p.status === "done") {
+        dlBtn.textContent = "Downloaded — click to reveal";
+        dlBtn.disabled = false;
+        dlBtn.onclick = () => toast(`Saved to ${p.path} — open it to install`);
+        return resolve();
+      }
+      if (p.status === "error") {
+        dlBtn.textContent = "Download failed";
+        toast(p.error || "Download failed");
+        return resolve();
+      }
+      setTimeout(tick, 500);
+    };
+    tick();
+  });
 }
 
 // ==========================================================================
