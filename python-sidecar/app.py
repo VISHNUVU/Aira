@@ -440,7 +440,8 @@ class SidecarService:
     def update_check(self) -> dict:
         return self.updater.check()
 
-    def update_download(self, asset_api_url: str, asset_name: str) -> dict:
+    def update_download(self, asset_url: str, asset_name: str,
+                        asset_sha256: Optional[str] = None) -> dict:
         """Kicks off a background download of a release asset to ~/Downloads
         and returns immediately — same non-blocking pattern as model
         downloads. Poll via update_download_progress()."""
@@ -459,7 +460,8 @@ class SidecarService:
 
         def _run() -> None:
             try:
-                path = self.updater.download(asset_api_url, dest, progress_cb=_progress)
+                path = self.updater.download(asset_url, dest, expected_sha256=asset_sha256,
+                                             progress_cb=_progress)
                 self._update_download.update(status="done", path=path)
             except Exception as e:
                 self._update_download.update(status="error", error=str(e))
@@ -556,7 +558,8 @@ def _route(service: SidecarService, method: str, path: str,
         if path == "/update/check":
             return 200, service.update_check()
         if path == "/update/download" and method == "POST":
-            return 200, service.update_download(body["asset_api_url"], body["asset_name"])
+            return 200, service.update_download(body["asset_url"], body["asset_name"],
+                                                asset_sha256=body.get("asset_sha256"))
         if path == "/update/download/progress":
             return 200, service.update_download_progress()
         if path == "/chat/speak" and method == "POST":

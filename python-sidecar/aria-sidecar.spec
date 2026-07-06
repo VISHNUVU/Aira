@@ -78,18 +78,8 @@ collect_optional("llama_cpp", data=True)
 # numpy is a hard dependency — make sure all of it comes along.
 hiddenimports.extend(collect_submodules("numpy"))
 
-# Update-check token (read-only, single-repo-scoped fine-grained GitHub PAT).
-# Bundled as data so the frozen app can check for new releases without the
-# end user needing to configure anything. Never committed to git — see
-# .gitignore. Missing gracefully: update_checker.py treats no-file as
-# "update checks disabled", it doesn't fail the build or the app.
-import os as _os
-_token_path = _os.path.join(_os.path.dirname(_os.path.abspath(SPEC)), ".update_token")
-if _os.path.isfile(_token_path):
-    datas.append((_token_path, "."))
-    print("[aria-sidecar.spec] bundling .update_token")
-else:
-    print("[aria-sidecar.spec] no .update_token found — update checks will be disabled in this build")
+# Note: update_checker.py hits a plain public URL (self-hosted manifest) —
+# no credential needs bundling for update checks anymore.
 
 
 a = Analysis(

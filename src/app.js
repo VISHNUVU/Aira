@@ -935,7 +935,8 @@ async function downloadUpdate(check, dlBtn, actionEl) {
   dlBtn.disabled = true; dlBtn.textContent = "Starting…";
   try {
     await api("/update/download", "POST", {
-      asset_api_url: check.asset_api_url, asset_name: check.asset_name,
+      asset_url: check.asset_url, asset_name: check.asset_name,
+      asset_sha256: check.asset_sha256,
     });
   } catch { dlBtn.textContent = "Failed to start"; return; }
 
