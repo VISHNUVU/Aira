@@ -1,0 +1,58 @@
+[project]
+name = "aria-sidecar"
+version = "0.1.0"
+description = "Python sidecar for Aria — local self-improving AI (engine, memory, feedback, trainer, tools)"
+requires-python = ">=3.10"
+dependencies = [
+    # Core (platform-independent) — needed everywhere:
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# Apple Silicon inference + on-device QLoRA training:
+#
+# transformers is pinned exactly (not just floored) — mlx-lm's own installed
+# version breaks on transformers>=5.1 (`AutoTokenizer.register` signature
+# changed: `AttributeError: 'str' object has no attribute '__module__'`).
+# mlx-vlm/mlx-audio declare a *floor* of transformers>=5.5, which looks like
+# a conflict, but they've been verified working fine against 5.0.0 in
+# practice — that floor is just untested-but-not-actually-required. Without
+# this exact pin, a plain `pip install -e .` picks the newest transformers
+# and silently breaks mlx_lm imports.
+mlx = [
+    "mlx>=0.18",
+    "mlx-lm>=0.19",
+    "mlx-embeddings>=0.0.3",
+    "mlx-vlm>=0.6",
+    "transformers==5.0.0",
+]
+# Cross-platform inference (Windows / Linux / mobile):
+llamacpp = [
+    "llama-cpp-python>=0.3",
+]
+# Vector store for RAG memory (pick one; lancedb is embedded + fast):
+memory = [
+    "lancedb>=0.13",
+    "pyarrow>=15",
+]
+# Natural offline text-to-speech (neural voice). The macOS `say` fallback and
+# the fake test voice need nothing here — this is only for the Kokoro backend:
+voice = [
+    "kokoro>=0.9",
+    "soundfile>=0.12",
+]
+# Dev / test:
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["engine", "voice"]
+py-modules = ["memory", "feedback", "trainer", "eval_gate", "tools", "store", "app", "speech"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "aria-sidecar",
+      "runtimeExecutable": "python-sidecar/.venv/bin/python",
+      "runtimeArgs": ["python-sidecar/app.py", "--engine", "mlx", "--port", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "aria-ui",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["dev-serve.py"],
+      "port": 1420
+    }
+  ]
+}

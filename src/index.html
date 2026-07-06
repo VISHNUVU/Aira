@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aria — Your AI</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app-root">
+
+      <!-- ===================== ONBOARDING ===================== -->
+      <div id="onboarding">
+        <div class="ob-card">
+
+          <!-- Step 1: Welcome -->
+          <section class="ob-step" data-step="welcome">
+            <div class="ob-mark">◆</div>
+            <div class="ob-title">Meet Aria</div>
+            <p class="ob-sub">Your own AI companion that learns from you, remembers what matters, and never leaves your Mac.</p>
+            <div class="ob-features">
+              <div class="ob-feature"><span class="ico">🔒</span><div><b>Completely private</b><span class="desc">Nothing you say ever leaves this computer.</span></div></div>
+              <div class="ob-feature"><span class="ico">🧠</span><div><b>Remembers you</b><span class="desc">Tell it something once, and it's remembered.</span></div></div>
+              <div class="ob-feature"><span class="ico">📶</span><div><b>Works offline</b><span class="desc">No internet needed once it's set up.</span></div></div>
+            </div>
+            <button class="ob-primary" data-next="choose">Get Started</button>
+          </section>
+
+          <!-- Step 2: Choose -->
+          <section class="ob-step" data-step="choose">
+            <div class="ob-title" style="font-size:24px">Set up your AI</div>
+            <p class="ob-sub">This downloads once, then Aria works entirely offline.</p>
+            <div id="ob-choices" class="ob-choices"></div>
+            <button class="ob-primary" data-action="start-download">Download &amp; Continue</button>
+            <button class="ob-link" data-action="skip-download">I'll do this later</button>
+          </section>
+
+          <!-- Step 3: Downloading -->
+          <section class="ob-step" data-step="downloading">
+            <div class="ob-ring-wrap">
+              <svg class="ob-progress-ring" viewBox="0 0 100 100">
+                <circle class="track" cx="50" cy="50" r="42" fill="none" stroke-width="7"/>
+                <circle class="spin" id="ob-ring-spin" cx="50" cy="50" r="42" fill="none" stroke-width="7"
+                  stroke-dasharray="140 400"/>
+                <circle class="progress" id="ob-ring-progress" cx="50" cy="50" r="42" fill="none" stroke-width="7"
+                  stroke-dasharray="263.9" stroke-dashoffset="263.9" transform="rotate(-90 50 50)"/>
+              </svg>
+              <div class="ob-ring-pct" id="ob-ring-pct"></div>
+            </div>
+            <div class="ob-title" style="font-size:22px">Setting up Aria</div>
+            <p class="ob-status-line" id="ob-status-line">Downloading, this only happens once…</p>
+            <p class="ob-bytes" id="ob-bytes"></p>
+            <div id="ob-error-slot"></div>
+          </section>
+
+          <!-- Step 4: Ready -->
+          <section class="ob-step" data-step="ready">
+            <div class="ob-check">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="ob-title">Aria is ready</div>
+            <p class="ob-sub">Say hello — everything from here happens right here on your Mac.</p>
+            <button class="ob-primary" data-action="finish">Start chatting</button>
+          </section>
+
+          <div class="ob-dots">
+            <span class="ob-dot" data-dot="welcome"></span>
+            <span class="ob-dot" data-dot="choose"></span>
+            <span class="ob-dot" data-dot="downloading"></span>
+            <span class="ob-dot" data-dot="ready"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== MAIN APP ===================== -->
+      <div id="app" class="hidden">
+        <header id="topbar">
+          <div class="brand">
+            <div class="mark">◆</div>
+            <div class="brand-text">
+              <span class="brand-name">Aria</span>
+              <span class="brand-sub"><span class="dot offline" id="status-dot"></span><span id="status-text">Connecting…</span></span>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <button class="icon-btn" id="speak-toggle" title="Speak replies">🔊</button>
+            <button class="icon-btn" id="settings-btn" title="Settings">⚙︎</button>
+          </div>
+        </header>
+
+        <div id="chat-wrap">
+          <div id="messages"></div>
+          <div id="composer-area">
+            <div id="composer">
+              <textarea id="composer-input" placeholder="Message Aria…" rows="1"></textarea>
+              <button class="mic-btn" id="mic-btn" title="Voice input">🎤</button>
+              <button class="stop-btn" id="stop-btn" title="Stop speaking" style="display:none">◼</button>
+              <button class="send-btn" id="send-btn" title="Send">➤</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== SETTINGS SHEET ===================== -->
+      <div id="settings-overlay">
+        <div id="settings-sheet">
+          <div id="settings-header">
+            <h2>Settings</h2>
+            <button class="icon-btn" id="settings-close">✕</button>
+          </div>
+          <div id="about-card">
+            <div class="row"><span>Engine</span><b id="st-engine">—</b></div>
+            <div class="row"><span>Model</span><b id="st-model">—</b></div>
+            <div class="row"><span>Adapter</span><b id="st-adapter">base</b></div>
+            <div class="row"><span>Device</span><b id="st-device">—</b></div>
+          </div>
+          <nav id="settings-tabs">
+            <button class="settings-tab active" data-view="memory">Memory</button>
+            <button class="settings-tab" data-view="tools">Tools</button>
+            <button class="settings-tab" data-view="training">Training</button>
+            <button class="settings-tab" data-view="adapters">Adapters</button>
+            <button class="settings-tab" data-view="models">Models &amp; Voice</button>
+          </nav>
+          <div id="settings-body"></div>
+        </div>
+      </div>
+
+    </div>
+    <div id="toast"></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

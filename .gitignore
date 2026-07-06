@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+
+# PyInstaller build artifacts
+python-sidecar/.pyi-cache/
+python-sidecar/build/
+python-sidecar/dist/
+*.spec.bak
+
+# Claude Code session state (not part of the app)
+.claude/scheduled_tasks.lock
+
+# Node
+node_modules/
+dist/
+
+# App data (never commit user data or weights)
+.aria/
+*.gguf
+*.safetensors
+models/
+adapters/
+vectors/
+*.db
+
+# OS
+.DS_Store

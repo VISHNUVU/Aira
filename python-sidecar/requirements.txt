@@ -1,0 +1,7 @@
+# Core (all platforms)
+numpy>=1.24
+
+# --- choose your backend extras (see pyproject.toml) ---
+# Apple Silicon (Mac): pip install -e ".[mlx,memory]"
+# Windows/Linux:       pip install -e ".[llamacpp,memory]"
+# Dev/testing only:    pip install -e ".[dev]"   (uses the fake engine, no weights)
