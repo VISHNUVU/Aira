@@ -131,13 +131,23 @@ try {
 # answers /status without crashing — the meaningful bar for a first,
 # unsigned Windows build.
 Say "Boot smoke check"
-$proc = Start-Process -FilePath $StagedBin -ArgumentList "--engine", "auto", "--port", "0" -PassThru -RedirectStandardOutput "sidecar-boot.log"
+$proc = Start-Process -FilePath $StagedBin -ArgumentList "--engine", "auto", "--port", "0" -PassThru `
+    -RedirectStandardOutput "sidecar-boot.log" -RedirectStandardError "sidecar-boot-err.log"
 Start-Sleep -Seconds 8
 if ($proc.HasExited) {
-    Die "sidecar exited immediately (exit code $($proc.ExitCode)) — see sidecar-boot.log"
+    Write-Host "--- sidecar-boot.log ---"
+    Get-Content "sidecar-boot.log" -ErrorAction SilentlyContinue | Write-Host
+    Write-Host "--- sidecar-boot-err.log ---"
+    Get-Content "sidecar-boot-err.log" -ErrorAction SilentlyContinue | Write-Host
+    Die "sidecar exited immediately (exit code $($proc.ExitCode)) — logs above"
 }
 $portLine = Get-Content "sidecar-boot.log" | Select-String "ARIA_PORT=(\d+)"
-if (-not $portLine) { Stop-Process -Id $proc.Id -Force; Die "sidecar never printed ARIA_PORT= — see sidecar-boot.log" }
+if (-not $portLine) {
+    Stop-Process -Id $proc.Id -Force
+    Write-Host "--- sidecar-boot-err.log ---"
+    Get-Content "sidecar-boot-err.log" -ErrorAction SilentlyContinue | Write-Host
+    Die "sidecar never printed ARIA_PORT= — logs above"
+}
 $port = $portLine.Matches[0].Groups[1].Value
 try {
     $status = Invoke-RestMethod -Uri "http://127.0.0.1:$port/status" -TimeoutSec 5

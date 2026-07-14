@@ -42,9 +42,25 @@ jobs:
         shell: pwsh
         run: ./scripts/build-windows.ps1
 
+      # if: always() — the .msi itself is usually already built successfully
+      # by the time a later step (e.g. the boot smoke check) fails; without
+      # this, a failure anywhere in Build discards the artifact and the next
+      # diagnosis cycle has to re-pay the full ~20 minute cold Rust compile
+      # instead of just inspecting what was already produced.
       - name: Upload .msi artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: aria-windows-msi
           path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - name: Upload sidecar boot logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-boot-logs
+          path: |
+            sidecar-boot.log
+            sidecar-boot-err.log
+          if-no-files-found: ignore
