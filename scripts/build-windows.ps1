@@ -155,9 +155,14 @@ if ($installProc.ExitCode -ne 0) {
     Get-Content $InstallLog -ErrorAction SilentlyContinue | Select-Object -Last 60 | Write-Host
     Die "msiexec install failed (exit code $($installProc.ExitCode))"
 }
+# Tauri strips the target-triple suffix when installing externalBin, same
+# as the main app exe (aria.exe, not aria-x86_64-pc-windows-msvc.exe) —
+# confirmed live from msi-install.log: "File: C:\Program Files\Aria\
+# aria-sidecar.exe" (no triple), unlike the pre-bundle staging copy in
+# src-tauri\binaries\ which does carry the triple (Tauri's externalBin
+# naming convention before bundling for a specific platform strips it).
 $InstallDir = Join-Path $env:ProgramFiles "Aria"
-$BuiltExe = Get-ChildItem $InstallDir -Filter "aria-sidecar-*.exe" -File -ErrorAction SilentlyContinue |
-    Select-Object -First 1
+$BuiltExe = Get-Item (Join-Path $InstallDir "aria-sidecar.exe") -ErrorAction SilentlyContinue
 if (-not $BuiltExe) { Die "no installed sidecar exe found under $InstallDir" }
 if (-not (Test-Path (Join-Path $BuiltExe.Directory "_internal"))) {
     Die "_internal not found next to $($BuiltExe.FullName) — tauri.windows.conf.json's resources mapping didn't land where PyInstaller's bootloader expects it"
