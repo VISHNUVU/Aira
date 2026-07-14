@@ -93,9 +93,14 @@ try {
 
 # --- 2. stage the onedir build for Tauri ------------------------------------
 # Unlike macOS (see build-macos.sh's step 5b), Windows' PyInstaller output
-# has no framework/symlink structure to preserve — Tauri's normal
-# `resources` bundler can copy `_internal/` by plain file copy without the
-# hand-rolled injection step the Mac build needs.
+# has no framework/symlink structure to preserve, so no runtime symlink/copy
+# dance is needed (contrast main.rs's ensure_sidecar_internal_symlink,
+# macOS-only). Instead, tauri.windows.conf.json declares `_internal` as a
+# bundle resource — confirmed from Tauri's own source
+# (tauri-utils::platform::resource_dir_from) that resource_dir() always
+# equals the executable's own directory on Windows, so this lands
+# `_internal` directly next to the sidecar exe at build time, exactly where
+# PyInstaller's onedir bootloader looks for it.
 Say "Staging sidecar for Tauri (onedir: externalBin + resources)"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 Copy-Item (Join-Path $SidecarDir "dist\aria-sidecar\aria-sidecar.exe") $StagedBin -Force
@@ -130,8 +135,24 @@ try {
 # smoke test). This only proves the frozen sidecar boots, binds a port, and
 # answers /status without crashing — the meaningful bar for a first,
 # unsigned Windows build.
+#
+# Deliberately does NOT run $StagedBin (the pre-build staging copy in
+# src-tauri\binaries\) — that copy has no _internal/ next to it, since
+# PyInstaller's dependency tree only gets placed alongside the executable
+# via Tauri's own Windows resource resolution (tauri.windows.conf.json maps
+# it there — see that file's comment for why: Tauri's resource_dir() on
+# Windows always equals the exe's own directory, confirmed from
+# tauri-utils' resource_dir_from()). So this runs the actual build OUTPUT
+# instead, where Tauri really placed the sidecar exe + resources together.
 Say "Boot smoke check"
-$proc = Start-Process -FilePath $StagedBin -ArgumentList "--engine", "auto", "--port", "0" -PassThru `
+$BuiltExe = Get-ChildItem "src-tauri\target\$Triple\release" -Filter "aria-sidecar-*.exe" -File |
+    Select-Object -First 1
+if (-not $BuiltExe) { Die "no built sidecar exe found under src-tauri\target\$Triple\release" }
+if (-not (Test-Path (Join-Path $BuiltExe.Directory "_internal"))) {
+    Die "_internal not found next to $($BuiltExe.FullName) — tauri.windows.conf.json's resources mapping didn't land where PyInstaller's bootloader expects it"
+}
+Ok "found built sidecar with _internal alongside: $($BuiltExe.FullName)"
+$proc = Start-Process -FilePath $BuiltExe.FullName -ArgumentList "--engine", "auto", "--port", "0" -PassThru `
     -RedirectStandardOutput "sidecar-boot.log" -RedirectStandardError "sidecar-boot-err.log"
 Start-Sleep -Seconds 8
 if ($proc.HasExited) {

@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/sidecar-internal/_internal/": "_internal/"
+    }
+  }
+}
