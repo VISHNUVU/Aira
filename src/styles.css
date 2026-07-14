@@ -14,9 +14,18 @@
   --text: #1d1d1f;
   --text-secondary: #6e6e73;
   --text-tertiary: #86868b;
-  --accent: #0071e3;
-  --accent-press: #005bb5;
-  --accent-tint: rgba(0, 113, 227, 0.12);
+  /* Brand orange is #ff751f — but that exact value only hits ~2.7:1 contrast
+     against white/black, well under WCAG AA (4.5:1), so it's reserved for
+     the logo mark and soft tint washes below (no text sits directly on
+     those). --accent itself (buttons, links, focus rings) uses a darker
+     value in the same hue that clears AA contrast against BOTH white and
+     black — verified: 4.53:1 vs white, 4.63:1 vs black — so light and dark
+     mode can safely share one value instead of needing a brighter/dimmer
+     pair the way the old blue accent did. */
+  --accent: #cc4d09;
+  --accent-press: #a83e07;
+  --accent-tint: rgba(255, 117, 31, 0.12);
+  --brand-orange: #ff751f;
   --good: #30a852;
   --bad: #e0343f;
   --warn: #d97a06;
@@ -45,9 +54,11 @@
     --text: #f5f5f7;
     --text-secondary: #a1a1a6;
     --text-tertiary: #86868b;
-    --accent: #0a84ff;
-    --accent-press: #409cff;
-    --accent-tint: rgba(10, 132, 255, 0.16);
+    /* Same --accent as light mode — see the note above the light-mode
+       definition for why one value covers both themes here. */
+    --accent: #cc4d09;
+    --accent-press: #e05a0a;
+    --accent-tint: rgba(255, 117, 31, 0.18);
     --good: #32d74b;
     --bad: #ff453a;
     --warn: #ff9f0a;
@@ -83,8 +94,8 @@ button { font-family: inherit; }
   position: fixed; inset: 0; z-index: 200;
   display: flex; align-items: center; justify-content: center;
   background:
-    radial-gradient(circle at 20% 15%, rgba(0, 113, 227, 0.16), transparent 55%),
-    radial-gradient(circle at 85% 80%, rgba(120, 80, 255, 0.14), transparent 50%),
+    radial-gradient(circle at 20% 15%, rgba(255, 117, 31, 0.16), transparent 55%),
+    radial-gradient(circle at 85% 80%, rgba(217, 84, 10, 0.14), transparent 50%),
     var(--bg);
   transition: opacity var(--dur-slow) var(--ease), visibility var(--dur-slow);
 }
@@ -112,10 +123,10 @@ button { font-family: inherit; }
 
 .ob-mark {
   width: 84px; height: 84px; border-radius: 26px;
-  background: linear-gradient(145deg, #5ea1ff, #0a63e0 60%, #5b3df0);
+  background: linear-gradient(145deg, #ffab6b, var(--brand-orange) 60%, #d9540a);
   display: flex; align-items: center; justify-content: center;
   font-size: 40px; color: #fff; font-weight: 700;
-  box-shadow: 0 12px 30px rgba(10, 99, 224, 0.35);
+  box-shadow: 0 12px 30px rgba(217, 84, 10, 0.35);
   margin-bottom: 6px;
 }
 .ob-title { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
@@ -141,9 +152,14 @@ button { font-family: inherit; }
 .ob-features { display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 8px; text-align: left; }
 .ob-feature { display: flex; gap: 12px; align-items: flex-start; padding: 10px 14px;
   background: var(--panel-2); border-radius: var(--radius-sm); }
-.ob-feature .ico { font-size: 18px; line-height: 1; margin-top: 1px; }
+.ob-feature .ico { color: var(--accent); flex-shrink: 0; margin-top: 1px; }
+.ob-feature .ico svg { width: 19px; height: 19px; display: block; }
 .ob-feature b { font-size: 13.5px; display: block; }
 .ob-feature span.desc { font-size: 12.5px; color: var(--text-secondary); }
+
+.ob-form { display: flex; flex-direction: column; gap: 12px; width: 100%; text-align: left; margin-top: 4px; }
+.ob-field label { margin-bottom: 6px; }
+.ob-field textarea { min-height: 70px; }
 
 .ob-choices { display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 6px; }
 .ob-choice {
@@ -199,6 +215,73 @@ button { font-family: inherit; }
 }
 #app.hidden { display: none; }
 
+#app-body { flex: 1; display: flex; flex-direction: row; min-height: 0; }
+#main-column { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+#history-sidebar {
+  width: 240px; flex-shrink: 0; display: flex; flex-direction: column;
+  gap: 4px; padding: 12px 10px; overflow: hidden;
+  background: var(--panel-2); border-right: 1px solid var(--border);
+  transition: width var(--dur-fast, 0.15s) var(--ease), padding var(--dur-fast, 0.15s) var(--ease);
+}
+#history-sidebar.collapsed { width: 0; padding: 12px 0; border-right-color: transparent; }
+#new-chat-btn {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); font: inherit; font-weight: 500;
+  cursor: pointer; white-space: nowrap;
+}
+/* Without an explicit size, a bare <svg> falls back to the browser's default
+   replaced-element box (300x150) instead of scaling to the button — this is
+   what made the "+" render enormous. */
+#new-chat-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+#new-chat-btn:hover { background: var(--panel-solid, var(--panel)); border-color: var(--accent); }
+#session-list { flex: 1; overflow-y: auto; margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.session-item {
+  display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+  border-radius: 9px; cursor: pointer; white-space: nowrap;
+  color: var(--text-secondary); position: relative;
+}
+.session-item:hover { background: var(--panel); }
+.session-item.active { background: var(--accent-tint); color: var(--accent); }
+.session-item .session-title {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px;
+}
+.session-item .session-delete {
+  flex-shrink: 0; opacity: 0; border: none; background: transparent; color: var(--text-tertiary);
+  cursor: pointer; padding: 2px; border-radius: 6px; line-height: 0;
+}
+.session-item:hover .session-delete { opacity: 1; }
+.session-item .session-delete:hover { color: var(--danger, #d33); background: var(--panel-2); }
+#session-list .empty { color: var(--text-tertiary); font-size: 13px; padding: 8px 10px; }
+
+#relaunch-banner {
+  /* Clears #composer-area (86px tall, flush to the bottom edge) with room
+     to spare — a fixed 16px offset here would sit half-behind the composer. */
+  position: fixed; left: 16px; bottom: 102px; z-index: 50;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border: none; border-radius: 16px;
+  background: var(--panel-solid, #fff); color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.16), 0 0 0 1px var(--border);
+  cursor: pointer; font: inherit; text-align: left;
+  animation: relaunch-in var(--dur-slow, 0.3s) var(--ease, ease-out);
+}
+#relaunch-banner[hidden] { display: none; }
+#relaunch-banner:hover { box-shadow: 0 10px 28px rgba(0,0,0,0.2), 0 0 0 1px var(--border); }
+#relaunch-banner .relaunch-icon {
+  width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-tint); color: var(--accent); font-size: 16px;
+}
+#relaunch-banner .relaunch-text { display: flex; flex-direction: column; gap: 1px; }
+#relaunch-banner .relaunch-text b { font-size: 14px; font-weight: 600; }
+#relaunch-banner #relaunch-version { font-size: 12px; color: var(--text-tertiary); }
+#relaunch-banner .relaunch-arrow { color: var(--text-tertiary); font-size: 16px; margin-left: 4px; }
+@keyframes relaunch-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 #topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 20px; flex-shrink: 0;
@@ -211,22 +294,30 @@ button { font-family: inherit; }
 #topbar button, #topbar .icon-btn { -webkit-app-region: no-drag; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand .mark { width: 30px; height: 30px; border-radius: 9px;
-  background: linear-gradient(145deg, #5ea1ff, #0a63e0 60%, #5b3df0);
+  background: linear-gradient(145deg, #ffab6b, var(--brand-orange) 60%, #d9540a);
   display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 14px; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.2; }
 .brand-name { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
 .brand-sub { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
 .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
 .dot.offline { background: var(--bad); }
+.dot.pending { background: var(--text-tertiary); }
 
 .topbar-actions { display: flex; align-items: center; gap: 6px; }
 .icon-btn {
+  position: relative;
   width: 34px; height: 34px; border-radius: 50%; border: none; background: transparent;
   color: var(--text-secondary); display: flex; align-items: center; justify-content: center;
   cursor: pointer; font-size: 16px; transition: background var(--dur-fast), color var(--dur-fast);
 }
 .icon-btn:hover { background: var(--panel-2); color: var(--text); }
 .icon-btn.on { background: var(--accent-tint); color: var(--accent); }
+.icon-btn svg { width: 18px; height: 18px; }
+.update-badge {
+  position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--accent, #4a9eff);
+  box-shadow: 0 0 0 2px var(--panel, #1c1c1e);
+}
 
 /* ---- chat ---- */
 #chat-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -234,17 +325,57 @@ button { font-family: inherit; }
   padding: 22px clamp(16px, 8vw, 22%) 10px; }
 .empty-chat { margin: auto; text-align: center; color: var(--text-secondary); max-width: 300px; }
 .empty-chat .mark { width: 64px; height: 64px; border-radius: 20px; margin: 0 auto 16px;
-  background: linear-gradient(145deg, #5ea1ff, #0a63e0 60%, #5b3df0);
+  background: linear-gradient(145deg, #ffab6b, var(--brand-orange) 60%, #d9540a);
   display: flex; align-items: center; justify-content: center; color: #fff; font-size: 28px; font-weight: 700; }
 .empty-chat h2 { font-size: 18px; color: var(--text); margin-bottom: 4px; font-weight: 650; }
 .empty-chat p { font-size: 13.5px; }
 
 .msg { max-width: 78%; padding: 11px 16px; border-radius: 20px; line-height: 1.45;
-  white-space: pre-wrap; font-size: 14.5px; animation: msgIn var(--dur) var(--ease); }
+  white-space: pre-wrap; font-size: 14.5px; animation: msgIn var(--dur) var(--ease); position: relative; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .msg.user { align-self: flex-end; background: var(--accent); color: white; border-bottom-right-radius: 6px; }
 .msg.assistant { align-self: flex-start; background: var(--panel-2); color: var(--text); border-bottom-left-radius: 6px; }
 .msg .ctx { font-size: 11px; color: var(--accent); margin-top: 6px; opacity: .85; }
+
+.msg-save-btn {
+  position: absolute; top: -10px; width: 24px; height: 24px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--panel-solid, var(--panel));
+  color: var(--text-tertiary); display: flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: 0; transition: opacity var(--dur-fast, .15s) var(--ease);
+  padding: 0;
+}
+.msg.user .msg-save-btn { left: -10px; }
+.msg.assistant .msg-save-btn { right: -10px; }
+.msg:hover .msg-save-btn { opacity: 1; }
+.msg-save-btn svg { width: 12px; height: 12px; }
+.msg-save-btn:hover { color: var(--accent); border-color: var(--accent); }
+.msg-save-btn.saved { color: var(--accent); background: var(--accent-tint); cursor: default; }
+.search-source { margin-top: 2px; }
+.search-source a { color: var(--accent); text-decoration: none; opacity: .85; }
+
+.generated-image-placeholder {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  padding: 12px; border-radius: 12px; background: var(--panel-solid, var(--panel));
+  font-size: 13px; color: var(--text-secondary);
+}
+.generated-image {
+  display: block; max-width: 100%; border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+}
+.generated-image-wrap { position: relative; display: inline-block; margin-top: 8px; }
+.image-download-btn {
+  position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--panel-solid, var(--panel));
+  color: var(--text-tertiary); display: flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: 0; transition: opacity var(--dur-fast, .15s) var(--ease);
+  padding: 0;
+}
+.generated-image-wrap:hover .image-download-btn { opacity: 1; }
+.image-download-btn svg { width: 14px; height: 14px; }
+.image-download-btn:hover { color: var(--accent); border-color: var(--accent); }
+.image-download-btn:disabled { opacity: .5; cursor: default; }
+.ctx.error { color: var(--bad, #d33); }
+.search-source a:hover { text-decoration: underline; opacity: 1; }
 
 .firstrun {
   align-self: center; max-width: 420px; background: var(--accent-tint); color: var(--text);
@@ -272,13 +403,14 @@ button { font-family: inherit; }
   display: flex; align-items: center; justify-content: center; cursor: pointer;
   transition: transform var(--dur-fast) var(--ease), background var(--dur-fast), opacity var(--dur-fast);
 }
+.send-btn svg, .stop-btn svg, .mic-btn svg { width: 17px; height: 17px; }
 .send-btn { background: var(--accent); color: #fff; }
 .send-btn:hover { background: var(--accent-press); }
 .send-btn:active { transform: scale(0.9); }
 .send-btn:disabled { opacity: .35; cursor: default; }
 .stop-btn { background: var(--panel-2); color: var(--bad); }
 
-.mic-btn { background: var(--panel-2); color: var(--text-secondary); font-size: 15px; }
+.mic-btn { background: var(--panel-2); color: var(--text-secondary); }
 .mic-btn:hover { background: var(--border); color: var(--text); }
 .mic-btn:disabled { opacity: .35; cursor: default; }
 .mic-btn.recording {
@@ -297,17 +429,18 @@ button { font-family: inherit; }
   position: fixed; inset: 0; z-index: 150; background: rgba(0, 0, 0, 0.28);
   -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
   opacity: 0; visibility: hidden; transition: opacity var(--dur) var(--ease), visibility var(--dur);
-  display: flex; justify-content: flex-end;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 #settings-overlay.open { opacity: 1; visibility: visible; }
 
 #settings-sheet {
-  width: min(440px, 100vw); height: 100vh; background: var(--panel-solid);
-  border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
-  display: flex; flex-direction: column;
-  transform: translateX(100%); transition: transform var(--dur-slow) var(--ease);
+  width: min(720px, 92vw); max-height: min(680px, 88vh); background: var(--panel-solid);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; overflow: hidden;
+  transform: translateY(10px) scale(.97); opacity: 0;
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-slow) var(--ease);
 }
-#settings-overlay.open #settings-sheet { transform: translateX(0); }
+#settings-overlay.open #settings-sheet { transform: none; opacity: 1; }
 
 #settings-header { display: flex; align-items: center; justify-content: space-between;
   padding: 18px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -323,7 +456,10 @@ button { font-family: inherit; }
 .settings-tab:hover { background: var(--panel-2); }
 .settings-tab.active { background: var(--accent); color: #fff; }
 
-#settings-body { flex: 1; overflow-y: auto; padding: 18px 20px 32px; }
+/* overflow-x stays reachable (not hidden) as a safety net — every table now
+   carries an explicit colgroup so this shouldn't be needed, but a future
+   table without one should be scrollable, never silently clipped. */
+#settings-body { flex: 1; overflow-y: auto; overflow-x: auto; padding: 18px 20px 32px; }
 
 #about-card { margin: 0 20px 16px; padding: 12px 14px; border-radius: var(--radius-sm);
   background: var(--panel-2); font-size: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
@@ -347,6 +483,16 @@ button { font-family: inherit; }
 
 .card { background: var(--panel-2); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+
+.upload-zone {
+  margin-top: 8px; padding: 20px; border-radius: var(--radius);
+  border: 1.5px dashed var(--border-strong); text-align: center;
+  color: var(--text-secondary); font-size: 13px; cursor: pointer;
+  transition: border-color var(--dur-fast), background var(--dur-fast);
+}
+.upload-zone:hover { border-color: var(--accent); }
+.upload-zone.dragover { border-color: var(--accent); background: var(--accent-tint); }
+.upload-zone.busy { cursor: default; opacity: .7; }
 .btn { background: var(--accent); color: white; border: none; padding: 8px 14px;
   border-radius: var(--radius-pill); cursor: pointer; font-size: 12.5px; font-weight: 600;
   transition: background var(--dur-fast), transform var(--dur-fast); }
@@ -371,12 +517,19 @@ label { font-size: 11.5px; color: var(--text-secondary); display: block; margin-
 .pill.bad { background: rgba(224,52,63,.14); color: var(--bad); }
 .pill.warn { background: rgba(217,122,6,.14); color: var(--warn); }
 .pill.info { background: var(--accent-tint); color: var(--accent); }
-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--border); }
+th { white-space: nowrap; }
+/* Short, fixed-shape values (sizes, state pills) should never character-wrap
+   even in a narrow settings-sheet column — only the genuinely long free-text
+   columns (HF repo paths, role descriptions) are meant to wrap. */
+td.nowrap { white-space: nowrap; }
+td { overflow-wrap: break-word; }
 th { color: var(--text-secondary); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .02em; }
 tr:hover td { background: var(--panel); }
 .empty { text-align: center; color: var(--text-secondary); padding: 30px; font-size: 12.5px; }
-code { background: var(--panel-solid); padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+code { background: var(--panel-solid); padding: 1px 6px; border-radius: 4px; font-size: 11px;
+  white-space: nowrap; }
 
 /* toast */
 #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);

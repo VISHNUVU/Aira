@@ -126,6 +126,25 @@ def test_default_registry_has_shell_disabled():
     assert reg.get("current_time").enabled is True
 
 
+def test_default_registry_has_web_search_disabled():
+    reg = default_registry(Store(":memory:"))
+    web_search = reg.get("web_search")
+    assert web_search is not None
+    assert web_search.enabled is False and web_search.dangerous is True
+
+
+def test_default_registry_omits_image_generation_without_images_dir():
+    reg = default_registry(Store(":memory:"))
+    assert reg.get("image_generation") is None
+
+
+def test_default_registry_has_image_generation_disabled_when_images_dir_given():
+    reg = default_registry(Store(":memory:"), images_dir="/tmp/aria-test-images")
+    tool = reg.get("image_generation")
+    assert tool is not None
+    assert tool.enabled is False and tool.dangerous is False
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

@@ -6,6 +6,13 @@ requires-python = ">=3.10"
 dependencies = [
     # Core (platform-independent) — needed everywhere:
     "numpy>=1.24",
+    # PDF text extraction for Memory file uploads (documents.py). Pure
+    # Python, no native extension — deliberately not PyMuPDF/fitz, which
+    # pulls in a much heavier compiled binary for the same basic text-layer
+    # extraction this app needs (see the cv2 bloat incident in
+    # aria-sidecar.spec for why unnecessary weight in a frozen build has
+    # been a real, previously-paid cost here, not just a style preference).
+    "pypdf>=4",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +50,16 @@ voice = [
     "kokoro>=0.9",
     "soundfile>=0.12",
 ]
+# Local image generation (image_gen.py shells out to its CLI — see that
+# module's docstring for why, and for why the model is FLUX.2 Klein via
+# mlx-community rather than the "default" FLUX.1-schnell: schnell's upstream
+# repo is gated on HuggingFace, a dead end with no auth flow anywhere in
+# this app). Pulls in full PyTorch (~2GB) — a deliberate, accepted exception
+# to this project's otherwise MLX-only dependency policy; there is currently
+# no mature pure-MLX local image generator to avoid it with.
+images = [
+    "mflux>=0.18",
+]
 # Dev / test:
 dev = [
     "pytest>=8",
@@ -54,7 +71,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["engine", "voice"]
-py-modules = ["memory", "feedback", "trainer", "eval_gate", "tools", "store", "app", "speech"]
+py-modules = ["memory", "feedback", "trainer", "eval_gate", "tools", "store", "app", "speech", "documents", "chat_history", "image_gen", "image_trigger"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

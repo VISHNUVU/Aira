@@ -18,11 +18,69 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from store import Store, now_ms
+
+
+# --------------------------------------------------------------------------
+# Auto-fact extraction — zero-cost heuristics, not a general NLU extractor.
+# Deliberately conservative (high-precision phrasing only) so it never fires
+# on ordinary conversation and never costs an extra model call. Anything
+# outside these patterns still goes through Settings -> Memory, or an
+# explicit "remember ..." instruction, which the catch-all pattern below
+# handles regardless of topic.
+# --------------------------------------------------------------------------
+_REMEMBER_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:remember|note|save)(?:\s+this)?(?:\s+that)?\s*[:\-]?\s*(.{4,300})$",
+    re.I,
+)
+# Every capture stops at punctuation, a clause-joining conjunction, or end of
+# string — without this, "my name is X and I live in Y" would swallow the
+# whole rest of the sentence into the name.
+_STOP = r"(?=[.!,;]|\s+(?:and|but|so|because|who|which|today|right now)\b|$)"
+_AUTO_FACT_PATTERNS = [
+    (re.compile(r"\bmy name is ([A-Za-z][\w' -]{0,40}?)" + _STOP, re.I),
+     "The user's name is {0}."),
+    (re.compile(r"\bcall me ([A-Za-z][\w' -]{0,40}?)" + _STOP, re.I),
+     "The user prefers to be called {0}."),
+    (re.compile(r"\bi live in ([A-Za-z][\w' ,-]{0,60}?)" + _STOP, re.I),
+     "The user lives in {0}."),
+    (re.compile(r"\bi'?m from ([A-Za-z][\w' ,-]{0,60}?)" + _STOP, re.I),
+     "The user is from {0}."),
+    (re.compile(r"\bi work as (?:an?|the)?\s*([A-Za-z][\w' -]{0,60}?)" + _STOP, re.I),
+     "The user works as {0}."),
+    (re.compile(r"\bmy job is ([A-Za-z][\w' -]{0,60}?)" + _STOP, re.I),
+     "The user's job is {0}."),
+    (re.compile(r"\bmy favorite ([\w -]{1,20}?) is ([A-Za-z0-9][\w' -]{0,60}?)" + _STOP, re.I),
+     "The user's favorite {0} is {1}."),
+]
+
+
+def extract_auto_facts(text: str) -> list[str]:
+    """Pull durable personal facts out of a single chat message, if any.
+
+    An explicit "remember/save/note ..." instruction always wins and is
+    stored verbatim (that's the user directly asking); otherwise we scan for
+    a small set of high-precision self-disclosure patterns (name, location,
+    job, favorites). Returns a list of complete sentences ready to store.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    m = _REMEMBER_RE.match(text)
+    if m:
+        fact = m.group(1).strip().rstrip(".")
+        return [fact + "."] if fact else []
+    facts = []
+    for pattern, template in _AUTO_FACT_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            facts.append(template.format(*[g.strip() for g in m.groups()]))
+    return facts
 
 
 # --------------------------------------------------------------------------
@@ -207,6 +265,19 @@ class Memory:
         self.store.conn.commit()
         self.vs.add(ids, vectors, chunks)
         return ids
+
+    def ingest_fact_if_new(self, text: str, source: str = "auto") -> Optional[str]:
+        """Store a short fact unless an identical one is already remembered —
+        stops the same self-disclosure ("my name is X") from re-saving a
+        duplicate chunk every time it's repeated across a conversation."""
+        existing = self.store.query(
+            "SELECT id FROM memory_chunks WHERE lower(text)=lower(?) LIMIT 1",
+            (text.strip(),),
+        )
+        if existing:
+            return None
+        ids = self.ingest_text(text, source=source)
+        return text if ids else None
 
     def ingest_file(self, path: str, metadata: Optional[dict] = None) -> list[str]:
         with open(path, "r", errors="replace") as f:

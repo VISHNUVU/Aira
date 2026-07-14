@@ -103,6 +103,33 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS skills (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    trigger      TEXT,
+    instructions TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skills_created ON skills(created_at);
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id         TEXT PRIMARY KEY,
+    title      TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated ON chat_sessions(updated_at);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    image_job  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chatmsg_session ON chat_messages(session_id, created_at);
 """
 
 
@@ -121,10 +148,19 @@ class Store:
 
     def _migrate(self) -> None:
         self.conn.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS above is a no-op on a database that
+        # already has the table from before this column existed — an
+        # existing ~/.aria/aria.db never gets image_job without this.
+        self._ensure_column("chat_messages", "image_job", "TEXT")
         cur = self.get_meta("schema_version")
         if cur is None:
             self.set_meta("schema_version", str(SCHEMA_VERSION))
         self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, decl: str) -> None:
+        cols = [r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+        if column not in cols:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     # ---- meta helpers ----------------------------------------------------
     def get_meta(self, key: str, default: Optional[str] = None) -> Optional[str]:

@@ -205,11 +205,72 @@ def make_shell_tool() -> Tool:
     )
 
 
-def default_registry(store: Store, memory=None) -> ToolRegistry:
+def make_web_search_tool() -> Tool:
+    """DISABLED by default — the only tool that sends data off this Mac."""
+    from web_search import search_web
+
+    def web_search(query: str, k: int = 5) -> list[dict]:
+        return search_web(query, k=k)
+
+    return Tool(
+        name="web_search",
+        description="Search the public web via DuckDuckGo and return the top "
+                    "results (title, snippet, URL). Sends your query to "
+                    "DuckDuckGo's servers — the only capability in Aria that "
+                    "leaves this Mac. Off by default.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "search query"},
+                "k": {"type": "integer", "description": "number of results", "default": 5},
+            },
+            "required": ["query"],
+        },
+        func=web_search,
+        enabled=False,      # OFF by default — privacy
+        dangerous=True,     # flagged distinctly in the Tools panel like run_shell
+    )
+
+
+def make_image_generation_tool(images_dir: str) -> Tool:
+    """DISABLED by default — not a privacy concern (generation is fully
+    local, see image_gen.py), but a real resource one: a ~4.3GB one-time
+    model download, then real GPU time and battery per image. Off until the
+    user deliberately opts in, same reasoning as web_search being off for a
+    different resource (network) rather than a safety one."""
+    from image_gen import generate as generate_image
+
+    def image_generation(prompt: str) -> dict:
+        return generate_image(prompt, images_dir)
+
+    return Tool(
+        name="image_generation",
+        description="Generate an image from a text prompt, fully on-device "
+                    "via a local diffusion model (FLUX.2 Klein). First use "
+                    "downloads a ~4.3GB model. Off by default — real GPU "
+                    "time and battery cost per image, and a large one-time "
+                    "download.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "what to generate"},
+            },
+            "required": ["prompt"],
+        },
+        func=image_generation,
+        enabled=False,      # OFF by default — resource cost, not privacy
+        dangerous=False,
+    )
+
+
+def default_registry(store: Store, memory=None, images_dir: str = None) -> ToolRegistry:
     """Build a registry with the standard reference tools."""
     reg = ToolRegistry(store)
     if memory is not None:
         reg.register(make_file_search_tool(memory))
     reg.register(make_current_time_tool())
     reg.register(make_shell_tool())   # present but disabled
+    reg.register(make_web_search_tool())  # present but disabled
+    if images_dir is not None:
+        reg.register(make_image_generation_tool(images_dir))  # present but disabled
     return reg

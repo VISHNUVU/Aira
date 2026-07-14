@@ -105,6 +105,31 @@ def test_auto_voice_name():
     check("auto voice picks known backend", name in ("kokoro", "say", "fake"))
 
 
+def test_say_driver_produces_real_wav_audio():
+    # Regression: `--data-format=LEI16@N` only pairs with .caf/.wav/.m4a
+    # containers (man say's own examples) — the driver used to request it
+    # against a .aiff file, which the real `say` binary rejects with
+    # "Opening output file failed: fmt?" (confirmed live, exit code 1).
+    # speech.py's _run() only checks `res.ok and res.audio` before queuing a
+    # segment, so every failed synth was silently dropped — "Speak replies"
+    # produced no audio at all on this driver, the only one that actually
+    # ships (Kokoro isn't in the build venv, so auto_voice_name() falls back
+    # to "say" on every real install). This hits the real macOS `say`
+    # binary — the whole point is to catch what a mocked/fake driver can't.
+    import shutil
+    if not shutil.which("say"):
+        print("  SKIP  say driver test (say not available on this platform)")
+        return
+    from voice.say_driver import SayDriver
+    d = SayDriver()
+    r = d.synth("Testing the say driver.")
+    check("say driver synth succeeds", r.ok)
+    check("say driver reports no error", r.error == "")
+    check("say driver returns real (non-empty) audio", len(r.audio) > 1000)
+    check("say driver returns wav format", r.format == "wav")
+    check("say driver computes a real positive duration", r.seconds > 0)
+
+
 def test_speech_manager_speak_text():
     mgr = SpeechManager(backend="fake")
     segs = mgr.speak_text("One sentence here. Two sentences here. Three now.")
@@ -162,7 +187,8 @@ if __name__ == "__main__":
         test_chunker_decimals, test_chunker_initials,
         test_chunker_streaming_equiv, test_chunker_runaway_sentence,
         test_chunker_boundary_helper, test_fake_driver_wav,
-        test_auto_voice_name, test_speech_manager_speak_text,
+        test_auto_voice_name, test_say_driver_produces_real_wav_audio,
+        test_speech_manager_speak_text,
         test_speech_session_barge_in, test_route_integration,
     ]:
         print(f"\n{fn.__name__}")

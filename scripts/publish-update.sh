@@ -33,6 +33,19 @@ DMG_PATH="$(find "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg" -nam
 
 ASSET_NAME="Aria_${VERSION}_aarch64.dmg"
 SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
+
+# Release gate enforcement: verify-build.sh stamps the sha256 of a dmg whose
+# app passed every check (structure, real model load, real chat, lifecycle).
+# No matching stamp — because the gate failed, was skipped, or the dmg was
+# rebuilt after gating — means this exact artifact was never proven to work,
+# and an unproven artifact does not go to users. Ever again.
+STAMP="$(dirname "$DMG_PATH")/.release-gate-pass"
+if [[ ! -f "$STAMP" ]] || [[ "$(cat "$STAMP")" != "$SHA256" ]]; then
+  echo "✗ REFUSING TO PUBLISH: no release-gate pass stamp for this exact .dmg" >&2
+  echo "  run scripts/verify-build.sh (or a full scripts/build-macos.sh) first" >&2
+  exit 1
+fi
+echo "  gate:   ✓ release-gate stamp matches this .dmg"
 SIZE="$(stat -f%z "$DMG_PATH")"
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ASSET_URL="http://${VPS_HOST}:8099/releases/${ASSET_NAME}"

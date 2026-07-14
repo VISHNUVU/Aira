@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 from typing import Iterator, Optional
 
@@ -41,12 +40,90 @@ from .base import (
     EngineCapabilities,
     EngineDriver,
     EngineError,
+    ToolCallSpan,
     TrainConfig,
     TrainResult,
 )
 
 _CHANNEL_TAG_RE = re.compile(r"<\|channel>\w+\s*<channel\|>")
 _CHANNEL_HOLDBACK = 32  # longest a real tag could plausibly be
+
+_TOOL_CALL_HOLDBACK = 16  # longest a partial "<|tool_call>" prefix could be
+
+
+def _filter_tool_call_leak(chunks: Iterator[str]) -> Iterator[str]:
+    """Truncate generation at the first sign of a leaked native tool-call
+    attempt (observed live: "<|tool_call>call:web_search{queries:[...]}
+    <tool_call|>" for phrasings like "search about X").
+
+    Nothing in this codebase executes tool calls — app.py never passes
+    tool specs to generate() precisely because there's no loop to back
+    them up (see the comment in SidecarService.chat()) — yet the model
+    emits this syntax unconditionally for certain requests regardless of
+    whether any tools were offered. Rather than try to parse and strip a
+    balanced open/close pair (the content between them can run to hundreds
+    of characters, too long for a small streaming-safe holdback buffer to
+    reliably span), this just stops the reply where the attempt starts.
+    Any preamble sentence before it ("Let me look that up...") still
+    reaches the user; the garbled call syntax never does.
+    """
+    buf = ""
+    for chunk in chunks:
+        buf += chunk
+        idx = buf.find("<|tool_call>")
+        if idx != -1:
+            if buf[:idx]:
+                yield buf[:idx]
+            return
+        if len(buf) > _TOOL_CALL_HOLDBACK:
+            emit, buf = buf[:-_TOOL_CALL_HOLDBACK], buf[-_TOOL_CALL_HOLDBACK:]
+            if emit:
+                yield emit
+    if buf:
+        yield buf
+
+
+def _split_tool_call(
+    chunks: Iterator[str], tool_call_start: str, tool_call_end: str
+) -> Iterator[str | ToolCallSpan]:
+    """Like `_filter_tool_call_leak`, but for when tool specs were actually
+    passed to generate() — capture a complete native tool-call span instead
+    of just discarding it, so the caller (app.py's tool loop) can parse and
+    dispatch it. Text before the call still streams through normally (this
+    is what keeps first-token latency unchanged for the common no-tool-call
+    reply — only turns that actually call a tool pay any buffering cost).
+
+    Yields plain str chunks for ordinary text, then — if a complete call is
+    captured — exactly one ToolCallSpan as the final item. If the stream
+    ends before the closing tag appears (e.g. max_tokens hit mid-call), the
+    partial span is silently dropped, same fallback as the truncating
+    filter this sits alongside.
+    """
+    buf = ""
+    capturing = False
+    for chunk in chunks:
+        buf += chunk
+        if not capturing:
+            idx = buf.find(tool_call_start)
+            if idx != -1:
+                if buf[:idx]:
+                    yield buf[:idx]
+                buf = buf[idx:]
+                capturing = True
+            elif len(buf) > _TOOL_CALL_HOLDBACK:
+                emit, buf = buf[:-_TOOL_CALL_HOLDBACK], buf[-_TOOL_CALL_HOLDBACK:]
+                if emit:
+                    yield emit
+        if capturing:
+            end_idx = buf.find(tool_call_end)
+            if end_idx != -1:
+                span = buf[: end_idx + len(tool_call_end)]
+                yield ToolCallSpan(raw_text=span)
+                return
+    if not capturing and buf:
+        yield buf
+    # capturing but never closed: partial call, dropped (matches the
+    # existing truncate-on-leak fallback for an incomplete attempt).
 
 
 def _filter_channel_tags(chunks: Iterator[str]) -> Iterator[str]:
@@ -243,7 +320,13 @@ class MLXDriver(EngineDriver):
         polling would see no progress for long stretches, then a jump.
         """
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-        from huggingface_hub import snapshot_download, HfApi
+        try:
+            from huggingface_hub import snapshot_download, HfApi
+        except ImportError:
+            raise EngineError(
+                "huggingface_hub isn't available in this build — model "
+                "downloads need it even though inference itself doesn't."
+            )
         import threading
         import time
 
@@ -290,13 +373,27 @@ class MLXDriver(EngineDriver):
             raise EngineError("No model loaded. Call load() first.")
 
         if self._vlm_mode:
-            yield from _filter_channel_tags(self._generate_vlm(
-                messages, max_tokens=max_tokens, temperature=temperature, stream=stream))
+            yield from _filter_tool_call_leak(_filter_channel_tags(self._generate_vlm(
+                messages, max_tokens=max_tokens, temperature=temperature, stream=stream)))
             return
 
-        yield from _filter_channel_tags(self._generate_lm(
+        text_stream = _filter_channel_tags(self._generate_lm(
             messages, max_tokens=max_tokens, temperature=temperature,
             tools=tools, stream=stream))
+        if tools and getattr(self._tokenizer, "has_tool_calling", False):
+            # Real tool specs were offered and this checkpoint can natively
+            # emit tool-call syntax — capture a complete call instead of
+            # truncating it (see _split_tool_call's docstring). Falls back
+            # to the truncating filter below for every other case (no tools
+            # passed, or a checkpoint/tokenizer with no tool-parser) so
+            # every existing tools=None call site is completely unaffected.
+            yield from _split_tool_call(
+                text_stream,
+                self._tokenizer.tool_call_start,
+                self._tokenizer.tool_call_end,
+            )
+            return
+        yield from _filter_tool_call_leak(text_stream)
 
     def _generate_lm(self, messages, *, max_tokens, temperature, tools, stream):
         from mlx_lm import stream_generate
@@ -393,6 +490,30 @@ class MLXDriver(EngineDriver):
         if not stream:
             yield "".join(chunks)
 
+    def parse_tool_calls(
+        self, text: str, tools: Optional[list[dict]] = None
+    ) -> list[dict]:
+        """Parse a captured tool-call span via the tokenizer's own dormant
+        tool_parser (populated by mlx_lm.load() for any checkpoint whose
+        chat template declares native tool-calling — e.g. Gemma 4's
+        mlx_lm.tool_parsers.gemma4 — but never invoked anywhere else in this
+        codebase before this loop existed).
+
+        The real parser raises ValueError("No function provided.") rather
+        than returning an empty result when nothing matches, and returns a
+        bare dict for a single call but a list for multiple — both
+        normalized here so callers always get a plain list.
+        """
+        if not getattr(self._tokenizer, "has_tool_calling", False):
+            return []
+        try:
+            result = self._tokenizer.tool_parser(text, tools)
+        except ValueError:
+            return []
+        if result is None:
+            return []
+        return result if isinstance(result, list) else [result]
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed with a local MLX embedding model (default: EmbeddingGemma).
 
@@ -435,25 +556,30 @@ class MLXDriver(EngineDriver):
     def train_lora(
         self, dataset_path: str, out_dir: str, config: TrainConfig
     ) -> TrainResult:
-        """Run QLoRA via the `mlx_lm.lora` CLI.
+        """Run QLoRA via `mlx_lm.lora` (or `mlx_vlm.lora` for unified
+        checkpoints — see _train_lora_vlm).
 
         mlx-lm expects a data *directory* containing train.jsonl / valid.jsonl.
         `dataset_path` may be that directory, or a single .jsonl we split.
         """
         if self._vlm_mode:
-            return TrainResult(
-                ok=False,
-                error="QLoRA fine-tuning isn't wired up for unified/multimodal "
-                      "checkpoints yet (mlx_lm.lora is text-only). Train on "
-                      "gemma-4-e4b instead — it's the intended training target.",
-            )
+            # Confirmed live (2026-07-08): every mlx-community Gemma 4 export
+            # actually downloaded here — gemma-4-e4b included, not just the
+            # 12B — ships as a unified checkpoint (config.json declares
+            # vision_config + audio_config), which mlx_lm.lora can't load at
+            # all. That made training dead-on-arrival for every model in
+            # this app's own catalog until this branch existed. mlx_vlm
+            # ships its own `mlx_vlm.lora` specifically for this case — same
+            # LoRA mechanism, different CLI/dataset plumbing — see
+            # _train_lora_vlm.
+            return self._train_lora_vlm(dataset_path, out_dir, config)
         _require_mlx()
         os.makedirs(out_dir, exist_ok=True)
         data_dir = self._prepare_data_dir(dataset_path, out_dir, config)
         model_path = self._resolve_model_path(self._model_id or "gemma-4-e4b")
 
-        cmd = [
-            sys.executable, "-m", "mlx_lm.lora",
+        argv = [
+            "mlx_lm.lora",
             "--model", model_path,
             "--train",
             "--data", data_dir,
@@ -465,25 +591,138 @@ class MLXDriver(EngineDriver):
             "--max-seq-length", str(config.max_seq_len),
             "--seed", str(config.seed),
         ]
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, check=False
-            )
-        except FileNotFoundError as e:  # pragma: no cover
-            return TrainResult(ok=False, error=f"failed to launch trainer: {e}")
+        return self._run_lora_module_inprocess("mlx_lm.lora", argv, out_dir)
 
-        if proc.returncode != 0:
+    def _train_lora_vlm(
+        self, dataset_path: str, out_dir: str, config: TrainConfig
+    ) -> TrainResult:
+        """Run QLoRA via `mlx_vlm.lora` for unified/multimodal checkpoints.
+
+        Confirmed against the installed mlx_vlm version (2026-07-08):
+        - `--dataset` is fed straight into HF `datasets.load_dataset`, which
+          accepts a local directory containing a split-named file (e.g.
+          train.jsonl) — reusing _prepare_data_dir's output works even
+          though mlx_vlm never reads its sibling valid.jsonl (val_dataset is
+          hardcoded to None in mlx_vlm.lora's CLI regardless of flags).
+        - Rows already shaped as {"messages": [...]} pass through
+          transform_dataset_to_messages() untouched — same JSONL our
+          existing mlx_lm.lora path writes.
+        - `--adapter-path` on this CLI means "resume from", not "save to" —
+          passing it when no adapter exists yet raises FileNotFoundError, so
+          only `--output-path` is passed. save_adapter() writes both
+          adapters.safetensors and a sibling adapter_config.json into that
+          same directory, which is exactly the shape apply_lora_layers()
+          later expects from load()'s adapter_path=.
+        """
+        try:
+            import mlx_vlm  # noqa: F401
+        except ImportError as e:  # pragma: no cover - platform dependent
+            return TrainResult(ok=False, error=f"mlx_vlm not installed: {e}")
+        os.makedirs(out_dir, exist_ok=True)
+        data_dir = self._prepare_data_dir(dataset_path, out_dir, config)
+        model_path = self._resolve_model_path(self._model_id or "gemma-4-e4b")
+        adapter_file = os.path.join(out_dir, "adapters.safetensors")
+
+        argv = [
+            "mlx_vlm.lora",
+            "--model-path", model_path,
+            "--dataset", data_dir,
+            "--split", "train",
+            "--iters", str(config.iters),
+            "--batch-size", str(config.batch_size),
+            "--learning-rate", str(config.learning_rate),
+            "--max-seq-length", str(config.max_seq_len),
+            "--lora-rank", str(config.lora_rank),
+            "--lora-alpha", str(config.lora_alpha),
+            "--output-path", adapter_file,
+        ]
+        return self._run_lora_module_inprocess("mlx_vlm.lora", argv, out_dir)
+
+    def _run_lora_module_inprocess(
+        self, module_name: str, argv: list, out_dir: str
+    ) -> TrainResult:
+        """Runs an mlx_lm/mlx_vlm `*.lora` CLI module in-process via `runpy`,
+        instead of shelling out to a subprocess.
+
+        Confirmed live (2026-07-13): `sys.executable` inside the frozen,
+        PyInstaller-packaged app is this sidecar's OWN bootloader executable
+        (its own `--engine`/`--port` argparse, not a general-purpose Python
+        interpreter) — `[sys.executable, "-m", "mlx_lm.lora", ...]` works
+        fine in the dev venv (where sys.executable is really python3) but is
+        dead-on-arrival in every shipped build, with no standalone python3
+        binary anywhere in the bundle to fall back to. Same lesson already
+        learned for image_gen.py: run the real module in-process instead.
+
+        Two things are scoped to just this call and restored afterward:
+        - `sys.argv`, since both CLIs parse it directly (`mlx_lm.lora.main()`
+          takes no args; `mlx_vlm.lora`'s parser lives inline under its own
+          `if __name__ == "__main__":`, so `runpy.run_module(..., run_name=
+          "__main__")` is what actually re-triggers that block here).
+        - `nn.Module.load_weights`, patched lenient for the same reason
+          `_load_vlm_lenient` already patches it for chat inference: some
+          Gemma 4 checkpoints declare `num_kv_shared_layers`, and mlx_vlm's
+          own internal `load()` call (imported straight from mlx_vlm.utils,
+          not through this driver) hits strict-loading errors on the same
+          checkpoints without it (confirmed live: "Received 126 parameters
+          not in model" on gemma-4-e4b). Harmless no-op for the mlx_lm path.
+
+        argparse calls `sys.exit()` on bad arguments — since this now runs
+        in-process rather than as a subprocess, an uncaught SystemExit here
+        would kill whichever thread called this (this app's own GPU-executor
+        thread, shared with chat), not just "a subprocess" — so it's caught
+        explicitly rather than left to propagate.
+
+        There's no subprocess pipe to read progress from anymore, so stdout
+        is captured directly; mlx_vlm's progress lines are unconditionally
+        ANSI-colored (no TTY check), so _parse_losses() needs the stripped
+        version to find anything in them.
+        """
+        import contextlib
+        import io
+        import runpy
+        import mlx.nn as nn
+
+        old_argv = sys.argv
+        old_load_weights = nn.Module.load_weights
+
+        def _lenient(self_, weights, strict=True):
+            return old_load_weights(self_, weights, strict=False)
+
+        sys.argv = argv
+        nn.Module.load_weights = _lenient
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                runpy.run_module(module_name, run_name="__main__")
+        except SystemExit as e:
+            if e.code not in (None, 0):
+                return TrainResult(
+                    ok=False,
+                    error=f"{module_name} exited with code {e.code}: "
+                          f"{self._strip_ansi(buf.getvalue())[-2000:]}",
+                )
+        except Exception as e:
             return TrainResult(
                 ok=False,
-                error=f"mlx_lm.lora exited {proc.returncode}: {proc.stderr[-2000:]}",
+                error=f"{module_name} failed: {e}\n"
+                      f"{self._strip_ansi(buf.getvalue())[-1000:]}",
             )
-        losses = self._parse_losses(proc.stdout)
+        finally:
+            sys.argv = old_argv
+            nn.Module.load_weights = old_load_weights
+
+        stdout = buf.getvalue()
+        losses = self._parse_losses(self._strip_ansi(stdout))
         return TrainResult(
             ok=True,
             adapter_path=out_dir,
             train_loss=losses,
-            meta={"stdout_tail": proc.stdout[-1000:]},
+            meta={"stdout_tail": stdout[-1000:]},
         )
+
+    @staticmethod
+    def _strip_ansi(s: str) -> str:
+        return re.sub(r"\x1b\[[0-9;]*m", "", s)
 
     def _prepare_data_dir(self, dataset_path: str, out_dir: str,
                           config: TrainConfig) -> str:

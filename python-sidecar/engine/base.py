@@ -54,6 +54,18 @@ class TrainResult:
     meta: dict = field(default_factory=dict)
 
 
+@dataclass
+class ToolCallSpan:
+    """A captured, unparsed native tool-call span from a generation stream.
+
+    ``generate()`` yields one of these (instead of a plain str chunk) when it
+    detects a complete native tool-call attempt while ``tools`` was passed —
+    see MLXDriver's module docstring for why this replaces truncation. Pass
+    ``raw_text`` to ``parse_tool_calls()`` to get structured calls back.
+    """
+    raw_text: str
+
+
 class EngineError(RuntimeError):
     """Raised when a backend operation fails or is unsupported."""
 
@@ -100,6 +112,17 @@ class EngineDriver(ABC):
     @abstractmethod
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Return one embedding vector per input text."""
+
+    def parse_tool_calls(
+        self, text: str, tools: Optional[list[dict]] = None
+    ) -> list[dict]:
+        """Parse a captured ``ToolCallSpan.raw_text`` into structured calls:
+        ``[{"name": str, "arguments": dict}, ...]``, or ``[]`` if the text
+        doesn't contain a valid call or this backend/checkpoint doesn't
+        support native tool-calling. Optional capability — default no-op so
+        drivers without a tool-call parser (FakeDriver, LlamaCppDriver,
+        MLXDriver in VLM mode) don't have to implement it."""
+        return []
 
     # ---- training / adapters --------------------------------------------
     @abstractmethod

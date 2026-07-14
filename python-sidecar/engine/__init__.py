@@ -10,12 +10,13 @@ from .base import (
     EngineCapabilities,
     EngineDriver,
     EngineError,
+    ToolCallSpan,
     TrainConfig,
     TrainResult,
 )
 
 __all__ = [
-    "EngineDriver", "EngineCapabilities", "EngineError",
+    "EngineDriver", "EngineCapabilities", "EngineError", "ToolCallSpan",
     "TrainConfig", "TrainResult", "make_engine", "auto_engine_name",
 ]
 

@@ -30,14 +30,21 @@ class SttEngine:
 
     def _ensure_loaded(self) -> None:
         if self._model is None:
-            from mlx_audio.stt.utils import load_model
+            try:
+                from mlx_audio.stt.utils import load_model
+            except ImportError:
+                raise RuntimeError(
+                    "mlx-audio isn't available in this build — dictation "
+                    "needs it even though chat inference doesn't. Check "
+                    "`available` before calling transcribe()."
+                )
             self._model = load_model(self.model_id)
 
     def transcribe(self, audio_path: str) -> str:
         """Transcribe a local audio file (WAV; PCM formats miniaudio reads
         directly — no ffmpeg dependency). Returns the trimmed text."""
-        from mlx_audio.stt.generate import generate_transcription
         self._ensure_loaded()
+        from mlx_audio.stt.generate import generate_transcription
         result = generate_transcription(model=self._model, audio=audio_path, verbose=False)
         text = result.text if hasattr(result, "text") else str(result)
         return text.strip()

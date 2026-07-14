@@ -56,45 +56,49 @@ fi
 source .venv/bin/activate
 python -m pip install --upgrade pip >/dev/null
 
-# Install the sidecar itself so its modules import, plus PyInstaller.
-# Try progressively narrower extras so one broken/unavailable package (e.g.
-# kokoro not yet supporting a new Python release) doesn't sacrifice the real
-# MLX backend — only degrade voice, or as a last resort the whole backend.
+# Reproducible builds: requirements.lock is a pip freeze of a venv that
+# produced a fully verified release (model loads, chat works, gate passed).
+# Installing from it — exact pins, no resolver — means two builds from the
+# same commit get the same dependency set, instead of drifting with
+# whatever pip resolves that day (confirmed harm: a stray opencv-python in
+# the venv once added ~140MB of never-imported video codecs to the bundle,
+# and an unpinned transformers upgrade would break mlx-lm outright).
+# The legacy extras-based path below remains only as a fallback for a
+# checkout where the lockfile is missing; regenerate the lockfile from a
+# verified venv with:  pip freeze --exclude-editable > requirements.lock
 HAVE_MLX=0
-if pip install -e ".[mlx,memory,voice]" >/dev/null 2>&1; then
-  ok "installed sidecar with full backend (mlx, memory, voice)"
-  HAVE_MLX=1
-elif pip install -e ".[mlx,memory]" >/dev/null 2>&1; then
-  echo "  voice extras unavailable (e.g. kokoro doesn't support this Python yet) — keeping mlx+memory, TTS falls back to macOS 'say'"
-  ok "installed sidecar with mlx + memory backend (no neural voice)"
-  HAVE_MLX=1
-else
-  echo "  full backend install failed — building lean sidecar (fake/say engines)"
-  pip install -e ".[dev]" >/dev/null 2>&1 || pip install -e "." >/dev/null 2>&1 || true
-  ok "installed sidecar (lean)"
-fi
-
-# mlx-vlm (unified/multimodal Gemma checkpoints — the 12B and e4b chat
-# models both need it) and mlx-audio (offline Whisper dictation) are
-# installed as separate `--no-deps` steps, not declared in pyproject.toml's
-# `mlx` extra: both declare transformers>=5.5, but mlx-lm breaks on
-# anything past transformers==5.0.0, and putting both constraints in one
-# `pip install -e .[...]` resolve makes pip refuse the whole install as
-# unsatisfiable (confirmed — this silently shipped a lean/fake-only build
-# once already). --no-deps sidesteps that; the explicit re-pin after
-# corrects transformers back down regardless of what got pulled in.
-if [[ "$HAVE_MLX" == "1" ]]; then
-  echo "  installing mlx-vlm + mlx-audio (chat for unified checkpoints + offline dictation)"
-  if pip install --no-deps "mlx-vlm>=0.6" "mlx-audio>=0.4" >/dev/null 2>&1; then
-    ok "installed mlx-vlm + mlx-audio"
-  else
-    echo "  WARNING: mlx-vlm/mlx-audio install failed — 12B/e4b chat and mic dictation will not work in this build"
-  fi
-  pip install -q "transformers==5.0.0" >/dev/null 2>&1
+if [[ -f requirements.lock ]]; then
+  echo "  installing pinned dependency set (requirements.lock)"
+  pip install --no-deps -q -r requirements.lock || die "locked dependency install failed — fix requirements.lock rather than shipping a drifted build"
+  pip install --no-deps -q -e . >/dev/null
   pip uninstall -y hf-xet >/dev/null 2>&1 || true
-  ok "pinned transformers==5.0.0 (mlx_lm compat), removed hf-xet (reliable download progress)"
+  python -c "import mlx.core" >/dev/null 2>&1 && HAVE_MLX=1
+  ok "installed locked dependency set ($(wc -l < requirements.lock | tr -d ' ') pins, mlx=$HAVE_MLX)"
+else
+  echo "  WARNING: requirements.lock missing — falling back to unpinned resolution"
+  if pip install -e ".[mlx,memory,voice]" >/dev/null 2>&1; then
+    ok "installed sidecar with full backend (mlx, memory, voice)"
+    HAVE_MLX=1
+  elif pip install -e ".[mlx,memory]" >/dev/null 2>&1; then
+    echo "  voice extras unavailable — keeping mlx+memory, TTS falls back to macOS 'say'"
+    HAVE_MLX=1
+  else
+    echo "  full backend install failed — building lean sidecar (fake/say engines)"
+    pip install -e ".[dev]" >/dev/null 2>&1 || pip install -e "." >/dev/null 2>&1 || true
+  fi
+  if [[ "$HAVE_MLX" == "1" ]]; then
+    pip install --no-deps "mlx-vlm>=0.6" "mlx-audio>=0.4" >/dev/null 2>&1 || true
+    pip install -q "transformers==5.0.0" >/dev/null 2>&1
+    pip uninstall -y hf-xet >/dev/null 2>&1 || true
+    # Local image generation (mflux): unlike mlx-vlm/mlx-audio above, this
+    # genuinely needs its own full dependency resolution (torch et al are
+    # functional requirements, not something to --no-deps around) — a
+    # deliberate, accepted exception to the MLX-only policy (see
+    # pyproject.toml's `images` extra and image_gen.py's module docstring).
+    pip install -q ".[images]" >/dev/null 2>&1 || echo "  mflux install failed — building without image generation"
+  fi
+  pip install "pyinstaller>=6" >/dev/null
 fi
-pip install "pyinstaller>=6" >/dev/null
 ok "PyInstaller ready"
 
 # Keep PyInstaller's cache inside the repo (clean, deletable, sandbox-safe).
@@ -103,17 +107,28 @@ mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 echo "  running PyInstaller (aria-sidecar.spec)…"
 pyinstaller aria-sidecar.spec --noconfirm --clean >/dev/null
-[[ -f "$SIDECAR_DIR/dist/aria-sidecar" ]] || die "PyInstaller did not produce dist/aria-sidecar"
-ok "sidecar frozen: $(du -h dist/aria-sidecar | cut -f1) Mach-O binary"
+[[ -f "$SIDECAR_DIR/dist/aria-sidecar/aria-sidecar" ]] || die "PyInstaller did not produce dist/aria-sidecar/aria-sidecar (onedir)"
+ok "sidecar frozen (onedir): $(du -sh dist/aria-sidecar | cut -f1) total"
 deactivate
 cd "$ROOT"
 
-# --- 2. stage the binary at the externalBin triple path --------------------
-say "Staging sidecar for Tauri (externalBin)"
+# --- 2. stage the onedir build for Tauri ------------------------------------
+# The executable goes through Tauri's normal externalBin convention; its
+# `_internal/` dependency tree (everything PyInstaller unpacked ahead of
+# time instead of at launch — see aria-sidecar.spec's onedir note) ships as
+# a bundled Resource instead, since externalBin only copies a single file.
+# main.rs symlinks the two together next to each other on first launch.
+say "Staging sidecar for Tauri (onedir: externalBin + resources)"
 mkdir -p "$BIN_DIR"
-cp "$SIDECAR_DIR/dist/aria-sidecar" "$STAGED_BIN"
+cp "$SIDECAR_DIR/dist/aria-sidecar/aria-sidecar" "$STAGED_BIN"
 chmod +x "$STAGED_BIN"
-ok "staged $STAGED_BIN"
+ok "staged executable: $STAGED_BIN"
+
+SIDECAR_INTERNAL_DIR="$ROOT/src-tauri/resources/sidecar-internal"
+rm -rf "$SIDECAR_INTERNAL_DIR"
+mkdir -p "$SIDECAR_INTERNAL_DIR"
+cp -R "$SIDECAR_DIR/dist/aria-sidecar/_internal" "$SIDECAR_INTERNAL_DIR/_internal"
+ok "staged dependency tree: $SIDECAR_INTERNAL_DIR/_internal ($(du -sh "$SIDECAR_INTERNAL_DIR" | cut -f1))"
 
 # --- 3. ensure icons exist --------------------------------------------------
 say "Checking app icons"
@@ -141,11 +156,64 @@ if ! npx --no-install tauri --version >/dev/null 2>&1; then
 fi
 
 # --- 5. compile the app + bundle -------------------------------------------
-say "Building Aria.app + .dmg (tauri build — first Rust compile is slow)"
-# --target makes the bundle identifier explicit and matches the sidecar triple.
-npx tauri build --target "$TRIPLE"
+say "Building Aria.app (tauri build — first Rust compile is slow)"
+# Belt-and-suspenders: clear every place a stale _internal has been found
+# sitting between builds, so a fresh build never inherits anything from a
+# previous one regardless of which of these actually matters.
+rm -rf "$ROOT/src-tauri/target/$TRIPLE/release/bundle/macos/Aria.app"
+rm -rf "$ROOT/src-tauri/target/$TRIPLE/release/_internal"
+rm -rf "$ROOT/src-tauri/target/debug/_internal"
+npx tauri build --target "$TRIPLE" --bundles app
 
-# --- 6. report artifacts ----------------------------------------------------
+# --- 5b. inject the sidecar dependency tree + package the dmg ourselves -----
+# ROOT CAUSE (definitively isolated, end of a long session): Tauri's
+# `resources` bundler does not preserve symlinks — it flattens
+# Python.framework's internal structure (Python -> Versions/Current/Python
+# became a dereferenced regular file; Versions/Current and Resources links
+# were dropped entirely; verified via diff -rq between PyInstaller's pristine
+# onedir output and what Tauri shipped). A Python.framework without its
+# version symlinks breaks MLX's Metal shader library resolution with
+# `RuntimeError: Failed to load the default metallib`, killing model loading
+# in the packaged app while the identical unpackaged build worked fine.
+# Proof both ways: hand-copying the same _internal into the same bundle with
+# plain `cp -R` (which preserves symlinks) and running the same binary
+# in-place loaded gemma-4-12b in seconds, with no other change.
+# So `_internal` is deliberately NOT in tauri.conf.json's `resources` — it's
+# copied in by hand here, and the dmg is packaged with hdiutil directly
+# (tauri build --bundles dmg can't be used for it: it re-cleans and
+# re-bundles Aria.app from scratch first, wiping this injection).
+say "Injecting sidecar dependency tree (symlink-preserving)"
+APP_PATH="$ROOT/src-tauri/target/$TRIPLE/release/bundle/macos/Aria.app"
+[[ -d "$APP_PATH" ]] || die "tauri build did not produce $APP_PATH"
+rm -rf "$APP_PATH/Contents/Resources/_internal"
+cp -R "$SIDECAR_INTERNAL_DIR/_internal" "$APP_PATH/Contents/Resources/_internal"
+# Fail the build outright if the framework symlinks didn't survive the copy —
+# this exact breakage cost a full day to find; never let it ship silently.
+[[ -L "$APP_PATH/Contents/Resources/_internal/Python.framework/Python" ]] \
+  || die "Python.framework symlinks lost during copy — build would ship broken"
+ok "injected _internal ($(du -sh "$APP_PATH/Contents/Resources/_internal" | cut -f1)), framework symlinks intact"
+
+say "Packaging .dmg (hdiutil)"
+VERSION="$(python3 -c "import json; print(json.load(open('$ROOT/src-tauri/tauri.conf.json'))['version'])")"
+DMG_OUT_DIR="$ROOT/src-tauri/target/$TRIPLE/release/bundle/dmg"
+mkdir -p "$DMG_OUT_DIR"
+rm -f "$DMG_OUT_DIR"/*.dmg
+DMG_NAME="Aria_${VERSION}_aarch64.dmg"
+hdiutil create -volname "Aria" -srcfolder "$APP_PATH" -ov -format UDZO \
+  "$DMG_OUT_DIR/$DMG_NAME" >/dev/null
+ok "packaged $DMG_OUT_DIR/$DMG_NAME"
+
+# --- 6. release gate ---------------------------------------------------------
+# Every build must prove itself before it can ship: structure (framework
+# symlinks, metallib, no bloat), runtime (real launch, real model load, real
+# chat), lifecycle (auto-restart, clean quit). See scripts/verify-build.sh.
+# Set ARIA_SKIP_GATE=1 only for iterating on the build script itself.
+if [[ "${ARIA_SKIP_GATE:-0}" != "1" ]]; then
+  say "Release gate (scripts/verify-build.sh)"
+  "$SCRIPT_DIR/verify-build.sh" || die "release gate FAILED — this build must not ship"
+fi
+
+# --- 7. report artifacts ----------------------------------------------------
 BUNDLE_DIR="$ROOT/src-tauri/target/$TRIPLE/release/bundle"
 say "Build complete"
 APP_PATH="$(/usr/bin/find "$BUNDLE_DIR" -name 'Aria.app' -maxdepth 3 2>/dev/null | head -1 || true)"
