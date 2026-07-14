@@ -58,25 +58,22 @@ try {
     & ".venv\Scripts\Activate.ps1"
     python -m pip install --upgrade pip | Out-Null
 
-    # Same rationale as build-macos.sh: prefer the pinned lockfile over an
-    # unpinned resolve so two builds from the same commit produce the same
-    # dependency set. On Windows the lean fallback below installs the
-    # `llamacpp` extra instead of `mlx` — MLX/Metal doesn't exist here.
-    if (Test-Path "requirements.lock") {
-        Write-Host "  installing pinned dependency set (requirements.lock)"
-        pip install --no-deps -q -r requirements.lock
-        if ($LASTEXITCODE -ne 0) { Die "locked dependency install failed — fix requirements.lock rather than shipping a drifted build" }
-        pip install --no-deps -q -e . | Out-Null
-    } else {
-        Write-Host "  WARNING: requirements.lock missing — falling back to unpinned resolution"
-        pip install -e ".[llamacpp,memory]" 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  full backend install failed — building lean sidecar (fake engine only)"
-            pip install -e ".[dev]" 2>$null
-            if ($LASTEXITCODE -ne 0) { pip install -e "." }
-        }
-        pip install "pyinstaller>=6" | Out-Null
+    # requirements.lock is a pip freeze of the macOS build venv — it pins
+    # mlx/mlx-lm/mlx-embeddings/kokoro/mflux, none of which have Windows
+    # wheels at all (mlx is Apple-Silicon-only), so it can never be reused
+    # here. Confirmed live: a first CI run failed immediately on
+    # `mlx==0.31.2` with "No matching distribution found". Always use the
+    # unpinned extras path on this platform instead — a genuine
+    # requirements-windows.lock (generated from a verified Windows install)
+    # is future work once this pipeline itself has run successfully once.
+    Write-Host "  installing dependencies (unpinned — no Windows lockfile yet)"
+    pip install -e ".[llamacpp,memory]" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  full backend install failed — building lean sidecar (fake engine only)"
+        pip install -e ".[dev]" 2>$null
+        if ($LASTEXITCODE -ne 0) { pip install -e "." }
     }
+    pip install "pyinstaller>=6" | Out-Null
     Ok "PyInstaller ready"
 
     $env:PYINSTALLER_CONFIG_DIR = Join-Path $SidecarDir ".pyi-cache"
