@@ -43,6 +43,12 @@ const el = (tag, attrs = {}, ...kids) => {
 const colgroup = (...widths) => el("colgroup", {},
   ...widths.map(w => el("col", { style: `width:${w}%` })));
 const esc = (s) => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+// Assistant replies render as real Markdown (lists, bold, fenced code, etc.)
+// instead of literal asterisks/backticks. DOMPurify sanitizes marked's HTML
+// output before it ever reaches innerHTML — model output can be indirectly
+// steered by untrusted content (web search results, tool output) fed back
+// into the prompt, so this isn't optional hardening.
+const renderMarkdown = (text) => DOMPurify.sanitize(marked.parse(text ?? ""));
 const fmtTime = (ms) => ms ? new Date(ms).toLocaleString() : "—";
 
 function toast(msg) {
@@ -488,7 +494,9 @@ function addSaveToMemoryButton(bubble, text) {
 }
 
 function renderMsg(m) {
-  const d = el("div", { class: "msg " + m.role }, m.content);
+  const d = m.role === "assistant"
+    ? el("div", { class: "msg " + m.role, html: renderMarkdown(m.content) })
+    : el("div", { class: "msg " + m.role }, m.content);
   if (m.role === "assistant" && m.used_context)
     d.appendChild(el("div", { class: "ctx" }, "✓ used your memory as context"));
   if (m.role === "assistant" && m.auto_saved && m.auto_saved.length)
@@ -600,6 +608,15 @@ function renderSearchSources(search) {
   return wrap;
 }
 
+// Mirrors the onboarding welcome step's icon+bold+description row
+// (index.html's `.ob-feature` blocks) for visual consistency with the rest
+// of the app's first-run copy.
+function emptyChatFeature(iconSvg, title, desc) {
+  return el("div", { class: "empty-chat-feature" },
+    el("span", { class: "ico", html: iconSvg }),
+    el("div", {}, el("b", {}, title), el("span", { class: "desc" }, desc)));
+}
+
 function renderChat() {
   const msgs = $("#messages");
   msgs.innerHTML = "";
@@ -607,7 +624,17 @@ function renderChat() {
     msgs.appendChild(el("div", { class: "empty-chat" },
       el("div", { class: "mark" }, "◆"),
       el("h2", {}, "Hi, I'm Aria"),
-      el("p", {}, "Ask me anything. I remember what you tell me, and everything stays on your Mac.")));
+      el("p", {}, "Ask me anything. I remember what you tell me, and everything stays on your Mac."),
+      el("div", { class: "empty-chat-features" },
+        emptyChatFeature(
+          '<svg viewBox="0 0 20 20" fill="none"><path d="M10 3.5l1.1 3.4L14.5 8l-3.4 1.1L10 12.5l-1.1-3.4L5.5 8l3.4-1.1L10 3.5z" fill="currentColor"/><path d="M15.5 12l.6 1.9 1.9.6-1.9.6-.6 1.9-.6-1.9-1.9-.6 1.9-.6.6-1.9z" fill="currentColor"/></svg>',
+          "Remembers what you tell it", "Say something once, and it's remembered."),
+        emptyChatFeature(
+          '<svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="2.6" stroke="currentColor" stroke-width="1.6"/><path d="M10 3.2v1.6M10 15.2v1.6M16.8 10h-1.6M4.8 10H3.2M14.9 5.1l-1.1 1.1M6.2 13.7l-1.1 1.1M14.9 14.9l-1.1-1.1M6.2 6.3 5.1 5.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+          "Can use tools", "Time, search, and more — you control what's on in Settings."),
+        emptyChatFeature(
+          '<svg viewBox="0 0 20 20" fill="none"><rect x="4.5" y="9" width="11" height="8" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M6.5 9V6.5a3.5 3.5 0 0 1 7 0V9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+          "Completely private", "Nothing you say ever leaves this computer."))));
   } else {
     chatHistory.forEach(m => msgs.appendChild(renderMsg(m)));
   }
@@ -701,7 +728,7 @@ async function streamChatInto(msgs) {
         if (evt.delta) {
           if (!gotFirstToken) { spinner.remove(); gotFirstToken = true; }
           textAcc += evt.delta;
-          bubble.textContent = textAcc;
+          bubble.innerHTML = renderMarkdown(textAcc);
           msgs.scrollTop = msgs.scrollHeight;
         }
         if (evt.done) {
@@ -718,7 +745,7 @@ async function streamChatInto(msgs) {
   }
 
   if (!textAcc) { bubble.remove(); return; }
-  bubble.textContent = textAcc;
+  bubble.innerHTML = renderMarkdown(textAcc);
   if (usedContext) bubble.appendChild(el("div", { class: "ctx" }, "✓ used your memory as context"));
   autoSaved.forEach(fact => bubble.appendChild(el("div", { class: "ctx" }, `✓ saved to memory: ${fact}`)));
   if (usedSkills.length) bubble.appendChild(el("div", { class: "ctx" }, `✓ used skill: ${usedSkills.join(", ")}`));
