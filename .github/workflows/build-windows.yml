@@ -1,0 +1,50 @@
+name: Build Windows
+
+# Manual + branch-push trigger, not on every push to main — this is a slow,
+# artifact-heavy build (Rust compile + a multi-hundred-MB PyInstaller
+# freeze), not something to run on every commit yet. Run it from the
+# Actions tab, or push to a branch named `windows-build*`.
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "windows-build*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          override: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # tauri-winres (embeds the .exe's icon/version resource) needs
+      # llvm-rc, which isn't on the windows-latest image by default —
+      # confirmed missing when this same build was attempted on a macOS
+      # host during development; the VS Build Tools workload below
+      # includes it.
+      - name: Install Windows resource compiler (llvm-rc)
+        run: choco install llvm -y
+
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Upload .msi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aria-windows-msi
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: error

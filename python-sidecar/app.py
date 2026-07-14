@@ -60,14 +60,32 @@ ARIA_HOME = os.path.expanduser(os.environ.get("ARIA_HOME", "~/.aria"))
 # compares against GitHub releases for update checks).
 APP_VERSION = "0.1.20"
 
-# HF repo mapping (documented in ARCHITECTURE.md)
+# HF repo mapping (documented in ARCHITECTURE.md). Each entry is tagged with
+# the engine it runs on: MLXDriver.download() pulls a whole quantized-weights
+# repo (snapshot_download), while LlamaCppDriver.download() pulls one GGUF
+# `filename` out of a repo that holds many alternative quantizations —
+# models_list() filters this catalog down to whichever the active engine can
+# actually load, so e.g. a Windows/llama.cpp user never sees an MLX-only
+# entry they can't download.
 MODEL_CATALOG = {
-    "gemma-4-e2b": {"repo": "mlx-community/gemma-4-e2b-it-4bit", "size_gb": 1.8,
-                    "role": "inference (tiny / phones)"},
-    "gemma-4-e4b": {"repo": "mlx-community/gemma-4-e4b-it-4bit", "size_gb": 5.25,
+    "gemma-4-e2b": {"engine": "mlx", "repo": "mlx-community/gemma-4-e2b-it-4bit",
+                    "size_gb": 1.8, "role": "inference (tiny / phones)"},
+    "gemma-4-e4b": {"engine": "mlx", "repo": "mlx-community/gemma-4-e4b-it-4bit",
+                    "size_gb": 5.25,
                     "role": "training target (QLoRA fits 24GB) — fast chat model"},
-    "gemma-4-12b": {"repo": "mlx-community/gemma-4-12b-it-4bit", "size_gb": 7.0,
-                    "role": "inference (recommended, 24GB Mac)"},
+    "gemma-4-12b": {"engine": "mlx", "repo": "mlx-community/gemma-4-12b-it-4bit",
+                    "size_gb": 7.0, "role": "inference (recommended, 24GB Mac)"},
+    "gemma-4-e2b-gguf": {"engine": "llamacpp", "repo": "unsloth/gemma-4-E2B-it-GGUF",
+                         "filename": "gemma-4-E2B-it-Q4_K_M.gguf", "size_gb": 1.9,
+                         "role": "inference (Windows/Linux, tiny/fast)"},
+    "gemma-4-e4b-gguf": {"engine": "llamacpp", "repo": "unsloth/gemma-4-E4B-it-GGUF",
+                         "filename": "gemma-4-E4B-it-Q4_K_M.gguf", "size_gb": 5.5,
+                         "role": "inference (Windows/Linux, recommended)"},
+    "nomic-embed-text-v1.5": {"engine": "llamacpp",
+                              "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+                              "filename": "nomic-embed-text-v1.5.Q4_K_M.gguf",
+                              "size_gb": 0.1,
+                              "role": "embeddings (Windows/Linux, required for memory/RAG)"},
 }
 
 
@@ -700,7 +718,17 @@ class SidecarService:
         if os.path.isdir(self.models_dir):
             downloaded = {d for d in os.listdir(self.models_dir)
                           if os.path.isdir(os.path.join(self.models_dir, d))}
-        return {"catalog": MODEL_CATALOG,
+        # Filter to what the active engine can actually run — a Windows/
+        # llama.cpp user shouldn't see MLX-only entries (and vice versa).
+        # Non-inference-constrained engines (fake, used in tests) see the
+        # full catalog, matching this repo's existing test expectations.
+        engine_name = self.engine.capabilities.name
+        if engine_name in ("mlx", "llamacpp"):
+            catalog = {k: v for k, v in MODEL_CATALOG.items()
+                      if v.get("engine") == engine_name}
+        else:
+            catalog = MODEL_CATALOG
+        return {"catalog": catalog,
                 "downloaded": sorted(downloaded),
                 "current": self.engine.current_model}
 
@@ -711,9 +739,11 @@ class SidecarService:
         real downloads take minutes, so the HTTP request must not block for
         the whole transfer (the UI shows a live progress bar while polling).
         """
-        repo = MODEL_CATALOG.get(model_id, {}).get("repo")
+        entry = MODEL_CATALOG.get(model_id, {})
+        repo = entry.get("repo")
         if not repo:
             return {"ok": False, "error": f"unknown model: {model_id}"}
+        filename = entry.get("filename")  # GGUF single-file (llamacpp) only
         existing = self._downloads.get(model_id)
         if existing and existing["status"] == "downloading":
             return {"ok": True, "started": True, "already_running": True}
@@ -734,7 +764,10 @@ class SidecarService:
 
         def _run() -> None:
             try:
-                path = self.engine.download(model_id, repo, progress_cb=_progress)
+                if filename:
+                    path = self.engine.download(model_id, repo, filename, progress_cb=_progress)
+                else:
+                    path = self.engine.download(model_id, repo, progress_cb=_progress)
                 self._downloads[model_id].update(
                     status="loading", percent=100.0, path=path)
                 # Load straight into memory so "download done" == "ready to

@@ -88,6 +88,16 @@ fn quit_now(app: tauri::AppHandle) {
 /// No-op in dev (no bundled resource on disk) and a no-op on every
 /// subsequent launch (the symlinks, or real directories from a previous
 /// run, already exist).
+///
+/// macOS-only: this whole workaround exists because Tauri's `resources`
+/// bundler flattens the macOS-specific `Python.framework` symlink structure
+/// PyInstaller's onedir output relies on (see aria-sidecar.spec's module
+/// docstring). Windows' PyInstaller output has no such framework/symlink
+/// convention — plain DLLs next to the executable — so Tauri's normal
+/// `resources` copy works as-is there; this function is simply never called
+/// on that platform (see build_sidecar_command's Windows path note) and
+/// `std::os::unix::fs::symlink` wouldn't compile there anyway.
+#[cfg(target_os = "macos")]
 fn ensure_sidecar_internal_symlink(app: &tauri::App) {
     let Ok(exe_path) = std::env::current_exe() else { return };
     let Some(exe_dir) = exe_path.parent() else { return }; // Contents/MacOS
@@ -108,6 +118,9 @@ fn ensure_sidecar_internal_symlink(app: &tauri::App) {
         }
     }
 }
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_sidecar_internal_symlink(_app: &tauri::App) {}
 
 /// Builds the sidecar command — the frozen onedir binary via Tauri's
 /// externalBin convention in a bundled build, or `python3 app.py` straight
@@ -220,8 +233,13 @@ fn main() {
             // answering on its own port with stale in-memory state (e.g. an
             // old APP_VERSION), which is exactly what makes an update look
             // "stuck" even after the new build is actually installed.
+            #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("pkill")
                 .args(["-f", "Aria.app/Contents/MacOS/aria-sidecar"])
+                .output();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "aria-sidecar.exe"])
                 .output();
 
             ensure_sidecar_internal_symlink(app);
