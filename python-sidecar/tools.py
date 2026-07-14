@@ -62,6 +62,14 @@ class ToolRegistry:
 
     # ---- registration ----------------------------------------------------
     def register(self, tool: Tool) -> None:
+        # A user's enable/disable choice must survive a restart (and an app
+        # update, which only replaces the .app bundle — this store lives
+        # under ~/.aria, untouched by that). Tools are re-registered with
+        # their hardcoded defaults on every process start, so restore any
+        # persisted override here rather than trusting the caller's default.
+        saved = self.store.get_meta(f"tool_enabled:{tool.name}")
+        if saved is not None:
+            tool.enabled = saved == "1"
         self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> None:
@@ -70,6 +78,7 @@ class ToolRegistry:
     def set_enabled(self, name: str, enabled: bool) -> None:
         if name in self._tools:
             self._tools[name].enabled = enabled
+            self.store.set_meta(f"tool_enabled:{name}", "1" if enabled else "0")
 
     def get(self, name: str) -> Optional[Tool]:
         return self._tools.get(name)

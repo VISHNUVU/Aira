@@ -145,6 +145,26 @@ def test_default_registry_has_image_generation_disabled_when_images_dir_given():
     assert tool.enabled is False and tool.dangerous is False
 
 
+def test_enabled_state_survives_registry_recreation():
+    # Regression: a user's enable/disable choice must survive the sidecar
+    # process restarting (e.g. relaunching the app, or a fresh process after
+    # an app update) — set_enabled() must persist to the store, and
+    # register() must restore it, not just trust the hardcoded default.
+    store = Store(":memory:")
+    reg = default_registry(store)
+    assert reg.get("web_search").enabled is False   # off by default
+    reg.set_enabled("web_search", True)
+    reg.set_enabled("current_time", False)          # on by default -> turn off
+
+    # Simulate a new process: same on-disk store, brand-new registry.
+    reg2 = default_registry(store)
+    assert reg2.get("web_search").enabled is True
+    assert reg2.get("current_time").enabled is False
+    # A tool never explicitly toggled still falls back to its own default.
+    assert reg2.get("file_search") is None  # no memory passed in this test
+    assert reg2.get("run_shell").enabled is False
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
