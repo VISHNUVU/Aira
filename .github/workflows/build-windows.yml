@@ -63,4 +63,5 @@ jobs:
           path: |
             sidecar-boot.log
             sidecar-boot-err.log
+            msi-install.log
           if-no-files-found: ignore

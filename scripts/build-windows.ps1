@@ -136,22 +136,33 @@ try {
 # answers /status without crashing — the meaningful bar for a first,
 # unsigned Windows build.
 #
-# Deliberately does NOT run $StagedBin (the pre-build staging copy in
-# src-tauri\binaries\) — that copy has no _internal/ next to it, since
-# PyInstaller's dependency tree only gets placed alongside the executable
-# via Tauri's own Windows resource resolution (tauri.windows.conf.json maps
-# it there — see that file's comment for why: Tauri's resource_dir() on
-# Windows always equals the exe's own directory, confirmed from
-# tauri-utils' resource_dir_from()). So this runs the actual build OUTPUT
-# instead, where Tauri really placed the sidecar exe + resources together.
-Say "Boot smoke check"
-$BuiltExe = Get-ChildItem "src-tauri\target\$Triple\release" -Filter "aria-sidecar-*.exe" -File |
+# Deliberately installs the real .msi rather than guessing at an
+# intermediate build-output path: confirmed live that Tauri does NOT stage
+# externalBin + resources into the plain src-tauri\target\...\release\
+# folder at all (only aria.exe, the main shell, lands there) — externalBin
+# and the tauri.windows.conf.json resources mapping only get assembled
+# during the actual WiX bundling step. So the only location guaranteed to
+# have the sidecar exe sitting next to its _internal/ tree, matching what a
+# real user's machine will have, is the installed app itself.
+Say "Installing the built .msi (mirrors what an end user's machine gets)"
+$MsiPath = (Get-ChildItem "src-tauri\target\$Triple\release\bundle\msi" -Filter "*.msi" | Select-Object -First 1).FullName
+if (-not $MsiPath) { Die "no .msi found to install for the smoke check" }
+$InstallLog = "msi-install.log"
+$msiArgs = @("/i", "`"$MsiPath`"", "/quiet", "/norestart", "/l*v", "`"$InstallLog`"")
+$installProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
+if ($installProc.ExitCode -ne 0) {
+    Write-Host "--- $InstallLog (tail) ---"
+    Get-Content $InstallLog -ErrorAction SilentlyContinue | Select-Object -Last 60 | Write-Host
+    Die "msiexec install failed (exit code $($installProc.ExitCode))"
+}
+$InstallDir = Join-Path $env:ProgramFiles "Aria"
+$BuiltExe = Get-ChildItem $InstallDir -Filter "aria-sidecar-*.exe" -File -ErrorAction SilentlyContinue |
     Select-Object -First 1
-if (-not $BuiltExe) { Die "no built sidecar exe found under src-tauri\target\$Triple\release" }
+if (-not $BuiltExe) { Die "no installed sidecar exe found under $InstallDir" }
 if (-not (Test-Path (Join-Path $BuiltExe.Directory "_internal"))) {
     Die "_internal not found next to $($BuiltExe.FullName) — tauri.windows.conf.json's resources mapping didn't land where PyInstaller's bootloader expects it"
 }
-Ok "found built sidecar with _internal alongside: $($BuiltExe.FullName)"
+Ok "installed sidecar with _internal alongside: $($BuiltExe.FullName)"
 $proc = Start-Process -FilePath $BuiltExe.FullName -ArgumentList "--engine", "auto", "--port", "0" -PassThru `
     -RedirectStandardOutput "sidecar-boot.log" -RedirectStandardError "sidecar-boot-err.log"
 Start-Sleep -Seconds 8
