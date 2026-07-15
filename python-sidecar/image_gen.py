@@ -22,7 +22,7 @@ single shared MLX GPU worker thread (`SidecarService._gpu_executor`, also
 used for the chat engine and STT): MLX binds its Metal command stream to
 whichever thread first touches the GPU, so calling this from an arbitrary
 HTTP-handler thread would crash the moment it differs from whichever thread
-last touched MLX. See app.py's `_MLXThreadProxy` docstring for the full
+last touched MLX. See app.py's `_EngineThreadProxy` docstring for the full
 reasoning; this module intentionally stays agnostic of it so it can be
 tested and reasoned about on its own.
 

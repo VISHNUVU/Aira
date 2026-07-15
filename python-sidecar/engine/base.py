@@ -27,6 +27,16 @@ class EngineCapabilities:
     supports_adapters: bool = False
     device: str = "cpu"           # 'metal' | 'cuda' | 'cpu' | 'vulkan'
     notes: str = ""
+    # Whether the *currently loaded* model can natively call tools — not a
+    # fixed backend property like the fields above, since it depends on
+    # whether this specific checkpoint's chat template declares tool-call
+    # syntax (see MLXDriver._resolve_tool_calling's docstring for why this
+    # isn't always knowable from the backend alone: mlx_lm.load() populates
+    # this automatically, mlx_vlm.load() never did, even for an identical
+    # chat template — a real, previously-invisible gap this field exists to
+    # surface instead of leaving tools silently never firing with no signal
+    # anywhere the UI could show).
+    supports_tool_calling: bool = False
 
 
 @dataclass
@@ -74,7 +84,41 @@ class EngineDriver(ABC):
     """Abstract inference/training backend.
 
     Concrete implementations: :class:`MLXDriver` (macOS / Apple Silicon),
-    :class:`LlamaCppDriver` (Windows / Linux / mobile — currently a stub).
+    :class:`LlamaCppDriver` (Windows / Linux, via llama.cpp).
+
+    Tool-calling contract for a new backend
+    ----------------------------------------
+    ``app.py``'s ``_run_tool_loop`` drives every backend identically — it
+    never branches on which driver is loaded — by relying on three things
+    every driver must get right. This is deliberately a *contract*, not a
+    shared base-class implementation: :class:`MLXDriver` and
+    :class:`LlamaCppDriver` satisfy it via genuinely different mechanics
+    (streaming tag-capture off raw text vs. a library that already returns
+    structured tool calls), because their underlying libraries expose
+    fundamentally different APIs — forcing one shared implementation would
+    add indirection without removing real duplication. A third backend
+    should satisfy the same three points however fits its own library best:
+
+    1. ``generate()`` yields a :class:`ToolCallSpan` (instead of a plain
+       ``str`` chunk) when — and only when — ``tools`` was passed *and* the
+       model actually produced a complete tool-call attempt. Any plain text
+       before that point should still stream through normally as ``str``
+       chunks (this is what keeps first-token latency unaffected for the
+       common no-tool-call reply — see :class:`ToolCallSpan`'s docstring).
+    2. ``parse_tool_calls(raw_text, tools)`` turns that captured span into
+       ``[{"name": str, "arguments": dict}, ...]`` — ``[]`` if the backend or
+       currently-loaded checkpoint doesn't support tool-calling at all, never
+       a raised exception for "no calls found" (normalize any such
+       exceptions from an underlying parser library into an empty list).
+    3. ``capabilities.supports_tool_calling`` accurately reflects whether the
+       *currently loaded model* — not just the backend in the abstract —
+       supports native tool-calling. This is model-specific for
+       :class:`MLXDriver` (depends on the loaded checkpoint's chat template)
+       but a fixed ``True`` once any model is loaded for
+       :class:`LlamaCppDriver` (its ``chatml-function-calling`` handler
+       supports tools regardless of checkpoint). A real, previously-invisible
+       gap existed here: nothing surfaced whether tools would actually work
+       until this field was added — see ``EngineCapabilities.supports_tool_calling``.
     """
 
     def __init__(self, models_dir: str, adapters_dir: str):

@@ -8,6 +8,7 @@ from store import Store
 from engine import make_engine
 from memory import (
     Memory, InMemoryVectorStore, chunk_text, approx_tokens, _cosine,
+    _keyword_overlap,
 )
 
 
@@ -90,6 +91,71 @@ def test_delete_chunk():
 def test_cosine_identity():
     v = [0.1, 0.2, 0.3]
     assert abs(_cosine(v, v) - 1.0) < 1e-9
+
+
+def test_keyword_overlap():
+    assert _keyword_overlap("favorite color", "My favorite color is teal.") == 1.0
+    assert _keyword_overlap("random unrelated query", "My favorite color is teal.") == 0.0
+    assert _keyword_overlap("", "anything") == 0.0
+
+
+class _StubEmbedder:
+    """Embeds nothing meaningful — used with _FixedRankVectorStore so the
+    test controls raw vector-search ranking directly instead of depending
+    on any particular embedding model's quality."""
+    def embed(self, texts):
+        return [[0.0] for _ in texts]
+
+
+class _FixedRankVectorStore:
+    """Ignores the actual query vector; always ranks by insertion order
+    (earliest-added chunk = highest raw vector score). Used to simulate a
+    real observed live failure: pure vector search burying a chunk that
+    literally contains the answer beneath chunks that merely score higher
+    on embedding similarity (e.g. a "favorite color" query not surfacing a
+    chunk reading "My favorite color is teal.")."""
+
+    def __init__(self, scores):
+        self._order = []
+        self._texts = {}
+        self._scores = scores  # raw vector score per insertion index
+
+    def add(self, ids, vectors, texts):
+        for i, t in zip(ids, texts):
+            self._order.append(i)
+            self._texts[i] = t
+
+    def search(self, vector, k):
+        hits = [(cid, self._scores[idx]) for idx, cid in enumerate(self._order)]
+        hits.sort(key=lambda x: x[1], reverse=True)
+        return hits[:k]
+
+    def delete(self, ids):
+        for i in ids:
+            self._texts.pop(i, None)
+
+    def count(self):
+        return len(self._texts)
+
+
+def test_retrieve_reranks_verbatim_keyword_match_above_weak_vector_score():
+    store = Store(":memory:")
+    # The verbatim match is inserted last and given the *lowest* raw vector
+    # score on purpose — reproducing the bug where pure vector search ranked
+    # it below three keyword-irrelevant chunks.
+    vs = _FixedRankVectorStore(scores=[0.95, 0.90, 0.85, 0.80])
+    mem = Memory(store, _StubEmbedder(), vs, embedding_model="fake", top_k=3)
+    mem.ingest_text("The user enjoys hiking on weekends.", source="a.txt")
+    mem.ingest_text("The user's dog is named Comet.", source="b.txt")
+    mem.ingest_text("The user works as a software engineer.", source="c.txt")
+    mem.ingest_text("My favorite color is teal.", source="d.txt")
+
+    hits = mem.retrieve("What is my favorite color?", k=3)
+    assert any("teal" in h.text for h in hits), (
+        "verbatim match should surface in top-k even though its raw vector "
+        "score was the lowest of all four candidates"
+    )
+    assert hits[0].source == "d.txt"
 
 
 if __name__ == "__main__":

@@ -47,6 +47,17 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue))  { Die "Rust/Cargo n
 if (-not (Get-Command npm -ErrorAction SilentlyContinue))    { Die "Node/npm not found. Install: https://nodejs.org" }
 Ok "Windows, python + cargo + npm present"
 
+# APP_VERSION (python-sidecar/app.py) and tauri.conf.json's "version" are two
+# separately hand-maintained strings that must be kept in lockstep manually —
+# fail loudly here rather than ship a build where they've silently drifted.
+$sidecarVersionMatch = Select-String -Path (Join-Path $SidecarDir "app.py") -Pattern 'APP_VERSION = "([^"]+)"'
+$SidecarVersion = $sidecarVersionMatch.Matches[0].Groups[1].Value
+$TauriVersion = (Get-Content (Join-Path $Root "src-tauri\tauri.conf.json") | ConvertFrom-Json).version
+if ($SidecarVersion -ne $TauriVersion) {
+    Die "version drift: python-sidecar/app.py's APP_VERSION ($SidecarVersion) != src-tauri/tauri.conf.json's version ($TauriVersion) — fix one before building"
+}
+Ok "version in sync: $SidecarVersion"
+
 # --- 1. freeze the Python sidecar -------------------------------------------
 Say "Freezing Python sidecar (PyInstaller)"
 Push-Location $SidecarDir

@@ -271,4 +271,9 @@ class LlamaCppDriver(EngineDriver):
             supports_adapters=True,
             device="cpu",
             notes="Cross-platform inference via llama.cpp. No on-device training.",
+            # chat_format is pinned to "chatml-function-calling" at load()
+            # time unconditionally (see load()'s docstring) — once a model
+            # is loaded, tool-calling always works regardless of checkpoint,
+            # unlike MLXDriver where it depends on the specific chat template.
+            supports_tool_calling=self._llm is not None,
         )
