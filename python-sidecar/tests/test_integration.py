@@ -503,6 +503,64 @@ def test_tool_loop_respects_use_tools_flag():
     assert kwargs["tools"] is None
 
 
+def test_tool_loop_respects_cross_session_call_budget():
+    # A model that develops a habit of calling a tool every turn has no
+    # ceiling other than this — MAX_TOOL_ITERATIONS only caps a single turn.
+    # ensure_session() only reuses a passed session_id if it already exists
+    # (chat_history.py) — so the real id has to come from the first call's
+    # response, not an invented literal, or each "same session" call below
+    # would silently land in its own brand-new session instead.
+    svc = fresh_service()
+    calls = [{"name": "current_time", "arguments": {}}]
+
+    def always_calls_tool(*a, **kw):
+        yield ToolCallSpan(raw_text="<|tool_call>call:current_time{}<tool_call|>")
+
+    with patch.object(svc.engine, "generate", side_effect=always_calls_tool), \
+         patch.object(svc.engine, "parse_tool_calls", return_value=calls):
+        r0 = svc.chat([{"role": "user", "content": "what time is it"}])
+        session_id = r0["session_id"]
+        # MAX_TOOL_ITERATIONS(4) * 5 calls == MAX_TOOL_CALLS_PER_SESSION(20)
+        # exactly — the budget should be fully spent, not yet exceeded, here.
+        for _ in range(4):
+            svc.chat([{"role": "user", "content": "what time is it"}],
+                    session_id=session_id)
+    assert svc._session_tool_call_counts[session_id] == SidecarService.MAX_TOOL_CALLS_PER_SESSION
+
+    # The next call in the SAME session must not offer tools at all anymore.
+    with patch.object(svc.engine, "generate", wraps=svc.engine.generate) as spy, \
+         patch.object(svc.engine, "parse_tool_calls", return_value=calls):
+        r = svc.chat([{"role": "user", "content": "what time is it"}],
+                    session_id=session_id)
+    _, kwargs = spy.call_args
+    assert kwargs["tools"] is None
+    assert r["used_tools"] == []
+
+
+def test_tool_loop_session_budgets_are_independent():
+    svc = fresh_service()
+    calls = [{"name": "current_time", "arguments": {}}]
+
+    def always_calls_tool(*a, **kw):
+        yield ToolCallSpan(raw_text="<|tool_call>call:current_time{}<tool_call|>")
+
+    with patch.object(svc.engine, "generate", side_effect=always_calls_tool), \
+         patch.object(svc.engine, "parse_tool_calls", return_value=calls):
+        r0 = svc.chat([{"role": "user", "content": "what time is it"}])
+        session_a = r0["session_id"]
+        for _ in range(4):
+            svc.chat([{"role": "user", "content": "what time is it"}],
+                    session_id=session_a)
+
+    # A different (brand-new) session's budget must be untouched by
+    # session_a's usage.
+    with patch.object(svc.engine, "generate", wraps=svc.engine.generate) as spy, \
+         patch.object(svc.engine, "parse_tool_calls", return_value=calls):
+        svc.chat([{"role": "user", "content": "hi"}])
+    _, kwargs = spy.call_args
+    assert kwargs["tools"] is not None
+
+
 def test_load_model_remembers_last_model():
     svc = fresh_service()  # already loads gemma-4-e4b in fresh_service()
     assert svc.store.get_meta("last_model_id") == "gemma-4-e4b"

@@ -13,7 +13,12 @@ import re
 
 _IMAGE_TRIGGER_RE = re.compile(
     r"^\s*(?:please\s+)?(?:generate|create|draw|make|paint|render)\s+(?:me\s+)?"
-    r"(?:an?\s+)?(?:image|picture|photo|drawing|illustration|painting)\s+(?:of\s+)?(.{2,400})",
+    # "an?\s*" then an optional stray "a" tolerates a common typo where the
+    # article gets glued onto the noun ("an aimage", "a apicture") instead
+    # of leaving a space — without this, the whole deterministic trigger
+    # misses and the request falls through to the plain chat model, which
+    # then hallucinates a text refusal instead of actually generating.
+    r"(?:an?\s*)?a?(?:image|picture|photo|drawing|illustration|painting)\s+(?:of\s+)?(.{2,400})",
     re.I,
 )
 

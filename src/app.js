@@ -753,7 +753,7 @@ async function streamChatInto(msgs) {
   if (usedSearch) bubble.appendChild(renderSearchSources(usedSearch));
   renderImageJob(bubble, imageJob);
   addSaveToMemoryButton(bubble, textAcc);
-  chatHistory.push({ role: "assistant", content: textAcc, used_context: usedContext, auto_saved: autoSaved, used_skills: usedSkills, used_tools: usedTools, used_search: usedSearch });
+  chatHistory.push({ role: "assistant", content: textAcc, used_context: usedContext, auto_saved: autoSaved, used_skills: usedSkills, used_tools: usedTools, used_search: usedSearch, image_job: imageJob });
   refreshSessionList();
 }
 
@@ -1067,6 +1067,10 @@ settingsViews.tools = async function (root) {
 
   const tools = await api("/tools");
   const tcard = el("div", { class: "card" });
+  if (lastStatus && lastStatus.capabilities && !lastStatus.capabilities.tool_calling) {
+    tcard.appendChild(el("div", { class: "ctx", style: "margin-bottom:10px" },
+      "⚠ The current model can't call tools on its own — enabling one below won't do anything until you load a model that supports native tool-calling."));
+  }
   tcard.appendChild(el("label", {}, "Available tools"));
   const tbl = el("table");
   tbl.appendChild(colgroup(18, 46, 14, 22));

@@ -127,6 +127,25 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def _keyword_overlap(query: str, text: str) -> float:
+    """Fraction of the query's significant words (len > 2) that appear
+    verbatim in ``text``, case-insensitive.
+
+    Small/local embedding models can bury a chunk that literally contains the
+    answer beneath chunks that are merely semantically adjacent — e.g. a
+    query for "favorite color" failing to surface a stored chunk that reads
+    "My favorite color is teal." This is a cheap, bounded signal used to
+    rerank vector-search candidates so verbatim matches aren't lost purely to
+    embedding-space quirks; it never runs alone, only as a rerank on top of
+    the vector search's own candidate pool (see ``Memory.retrieve``).
+    """
+    q_words = {w for w in re.findall(r"\w+", query.lower()) if len(w) > 2}
+    if not q_words:
+        return 0.0
+    t_words = set(re.findall(r"\w+", text.lower()))
+    return len(q_words & t_words) / len(q_words)
+
+
 class InMemoryVectorStore:
     """Exact cosine search in Python. Fine for tests + small corpora."""
 
@@ -295,7 +314,10 @@ class Memory:
             return []
         k = k or self.top_k
         qvec = self.embedder.embed([query])[0]
-        hits = self.vs.search(qvec, k)
+        # Over-fetch a wider candidate pool than k so the keyword rerank below
+        # has a chance to pull up a verbatim match the raw vector search
+        # ranked outside the top-k (see _keyword_overlap's docstring).
+        hits = self.vs.search(qvec, max(k * 4, 20))
         if not hits:
             return []
         id_to_score = dict(hits)
@@ -305,13 +327,21 @@ class Memory:
             tuple(id_to_score.keys()),
         )
         by_id = {r["id"]: r for r in rows}
-        results = []
-        ts = now_ms()
-        for cid, score in hits:
+        reranked = []
+        for cid, vscore in hits:
             r = by_id.get(cid)
             if r is None:
                 continue
-            results.append(RetrievedChunk(cid, r["text"], score, r["source"]))
+            kw = _keyword_overlap(query, r["text"])
+            combined = (0.75 * vscore) + (0.25 * kw)
+            reranked.append((cid, combined, r))
+        reranked.sort(key=lambda x: x[1], reverse=True)
+        reranked = reranked[:k]
+
+        results = []
+        ts = now_ms()
+        for cid, combined, r in reranked:
+            results.append(RetrievedChunk(cid, r["text"], combined, r["source"]))
             self.store.conn.execute(
                 "UPDATE memory_chunks SET retrieval_count=retrieval_count+1, "
                 "last_retrieved=? WHERE id=?", (ts, cid),

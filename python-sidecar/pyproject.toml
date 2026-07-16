@@ -34,10 +34,18 @@ mlx = [
     "mlx>=0.18",
     "mlx-lm>=0.19",
     "mlx-embeddings>=0.0.3",
+    "huggingface_hub>=0.24",
 ]
-# Cross-platform inference (Windows / Linux / mobile):
+# Cross-platform inference (Windows / Linux / mobile). huggingface_hub is
+# declared explicitly here (not left to transitive resolution) because
+# LlamaCppDriver.download() imports it directly for hf_hub_download/HfApi —
+# without it, every model download on Windows fails immediately with
+# "huggingface_hub isn't available in this build" (a real, previously-shipped
+# bug: build-windows.ps1's `pip install -e ".[llamacpp,memory]"` never pulled
+# it in, since neither llama-cpp-python nor lancedb/pyarrow depend on it).
 llamacpp = [
     "llama-cpp-python>=0.3",
+    "huggingface_hub>=0.24",
 ]
 # Vector store for RAG memory (pick one; lancedb is embedded + fast):
 memory = [

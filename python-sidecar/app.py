@@ -58,7 +58,7 @@ ARIA_HOME = os.path.expanduser(os.environ.get("ARIA_HOME", "~/.aria"))
 # src-tauri/tauri.conf.json's "version" (that one drives the actual .app
 # bundle Info.plist; this one is what the running sidecar reports and
 # compares against GitHub releases for update checks).
-APP_VERSION = "0.1.20"
+APP_VERSION = "0.1.21"
 
 # HF repo mapping (documented in ARCHITECTURE.md). Each entry is tagged with
 # the engine it runs on: MLXDriver.download() pulls a whole quantized-weights
@@ -89,23 +89,32 @@ MODEL_CATALOG = {
 }
 
 
-class _MLXThreadProxy:
+class _EngineThreadProxy:
     """Pins every call on the wrapped object to one dedicated worker thread.
 
-    MLX associates its Metal command stream with the OS thread that first
-    touches the GPU. `ThreadingHTTPServer` hands each HTTP request to a new
-    thread, so calling `engine.generate()`/`embed()`/`stt.transcribe()`/etc.
-    straight from a request handler crashes with `There is no Stream(gpu, N)
-    in current thread` the moment it's a different thread than whichever one
-    loaded the model (e.g. the model-download background thread). Routing
-    every call through a single-worker executor makes "which thread" a
-    non-issue — and since there's only one GPU, serializing this way (engine
-    and STT share the same executor) is the correct behavior anyway, not
-    just a workaround.
+    Originally written for MLX specifically (hence the name this replaced,
+    `_MLXThreadProxy`) — MLX associates its Metal command stream with the OS
+    thread that first touches the GPU, and `ThreadingHTTPServer` hands each
+    HTTP request to a new thread, so calling `engine.generate()`/`embed()`/
+    `stt.transcribe()`/etc. straight from a request handler crashes with
+    `There is no Stream(gpu, N) in current thread` the moment it's a
+    different thread than whichever one loaded the model (e.g. the
+    model-download background thread).
+
+    Kept backend-neutral (this proxy wraps every engine, including
+    `LlamaCppDriver` on Windows/Linux) because the same serialization is
+    independently correct there too, for a different reason: a single
+    `llama_cpp.Llama` instance's underlying context is not safe for
+    concurrent calls (two `generate()`/`embed()` calls in flight against the
+    same model can corrupt its KV cache) — so "one worker thread, one call at
+    a time" isn't an MLX-only workaround to reconsider dropping on other
+    backends, it's the correct behavior for any backend that holds one
+    shared, stateful model handle. (There's only one GPU either way, so
+    engine and STT sharing the same executor doesn't cost anything extra.)
 
     `generate()` is a generator — calling it just constructs the generator
-    (no GPU work yet), but each `next()` on it does touch the GPU, so those
-    also have to hop onto the worker thread one step at a time to keep
+    (no GPU/model work yet), but each `next()` on it does touch the model, so
+    those also have to hop onto the worker thread one step at a time to keep
     streaming responsive instead of eagerly draining the whole generation.
     """
 
@@ -149,12 +158,12 @@ class SidecarService:
         os.makedirs(self.adapters_dir, exist_ok=True)
 
         # Shared by every MLX-touching object (engine + STT) — see
-        # _MLXThreadProxy for why this must be a single worker thread.
+        # _EngineThreadProxy for why this must be a single worker thread.
         self._gpu_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         if engine_name == "auto":
             engine_name = auto_engine_name()
-        self.engine = _MLXThreadProxy(make_engine(
+        self.engine = _EngineThreadProxy(make_engine(
             engine_name, self.models_dir, self.adapters_dir, dim=embed_dim),
             self._gpu_executor)
 
@@ -184,6 +193,13 @@ class SidecarService:
         self.skills = SkillLibrary(self.store)
         self.chat_history = ChatHistory(self.store)
         self._image_gen = {"status": "idle", "prompt": None, "error": None, "result": None}
+        # Cross-turn tool-call budget — see _run_tool_loop's MAX_TOOL_ITERATIONS
+        # comment for the within-a-turn cap; this is the separate, whole-
+        # conversation cap (a model that develops a habit of calling a tool
+        # every turn has no ceiling otherwise). In-memory only, keyed by
+        # session_id: resetting on a sidecar restart mid-conversation is a
+        # harmless edge case, not worth persisting to disk for.
+        self._session_tool_call_counts: dict[str, int] = {}
 
         # voice / speech: natural offline TTS with sentence streaming + barge-in
         voices_dir = os.path.join(home, "voices")
@@ -193,7 +209,7 @@ class SidecarService:
             voices_dir=voices_dir,
         )
         # speech-to-text: offline dictation for the chat composer's mic button
-        self.stt = _MLXThreadProxy(SttEngine(), self._gpu_executor)
+        self.stt = _EngineThreadProxy(SttEngine(), self._gpu_executor)
         self.updater = UpdateChecker(APP_VERSION)
         self._loaded = False
         self._downloads: dict = {}   # model_id -> {status, downloaded_bytes, total_bytes, percent, error}
@@ -239,7 +255,7 @@ class SidecarService:
             "capabilities": {
                 "generate": caps.can_generate, "embed": caps.can_embed,
                 "train": caps.can_train, "adapters": caps.supports_adapters,
-                "device": caps.device,
+                "device": caps.device, "tool_calling": caps.supports_tool_calling,
             },
             "memory": self.memory.stats(),
             "feedback": self.feedback.stats(),
@@ -302,13 +318,18 @@ class SidecarService:
         return saved
 
     def _search_web_if_triggered(self, last_user: str, use_tools: bool) -> Optional[dict]:
-        """Deterministic, explicit-only web search — not native function
-        calling (unreliable here: the VLM driver used by the recommended
-        12B/e4b checkpoints never even receives tool specs). Only fires on
-        an explicit "search for .../look up .../google ..." request, and
-        only if the web_search tool has been switched on in Settings ->
-        Tools — it's the one capability in Aria that leaves the machine,
-        so it never runs silently by default."""
+        """Deterministic, explicit-only web search — a fast-path alongside
+        (not a replacement for) the model-driven tool-calling loop, which can
+        also call web_search natively via _run_tool_loop now that MLXDriver's
+        VLM path actually receives tool specs (previously a real gap: every
+        recommended checkpoint is VLM-mode and silently never got them at
+        all). This pre-trigger stays because it's guaranteed to fire on an
+        exact phrasing rather than depending on the model's judgment, not
+        because native tool-calling doesn't work. Only fires on an explicit
+        "search for .../look up .../google ..." request, and only if the
+        web_search tool has been switched on in Settings -> Tools — it's the
+        one capability in Aria that leaves the machine, so it never runs
+        silently by default."""
         tool = self.tools.get("web_search")
         if not use_tools or not tool or not tool.enabled:
             return None
@@ -423,7 +444,7 @@ class SidecarService:
         def _run() -> None:
             # image_gen touches MLX/Metal, so the actual generation call
             # must run on the same shared single-worker GPU thread as the
-            # chat engine and STT (see _MLXThreadProxy) — this outer daemon
+            # chat engine and STT (see _EngineThreadProxy) — this outer daemon
             # thread only exists so the HTTP handler returns immediately.
             try:
                 result = self._gpu_executor.submit(
@@ -499,8 +520,11 @@ class SidecarService:
         return text
 
     # Tool specs get offered to generate() for real now (see _run_tool_loop) —
-    # capped so a model that keeps calling tools can't loop forever.
+    # capped so a model that keeps calling tools can't loop forever within
+    # one turn. MAX_TOOL_CALLS_PER_SESSION is the separate, whole-conversation
+    # cap (see _session_tool_call_counts).
     MAX_TOOL_ITERATIONS = 4
+    MAX_TOOL_CALLS_PER_SESSION = 20
 
     def _run_tool_loop(self, msgs: list[dict], max_tokens: int, use_tools: bool,
                        turn_id: str, stream: bool) -> Iterator[dict]:
@@ -509,17 +533,19 @@ class SidecarService:
         result doesn't fit synchronous dispatch-and-continue, so it stays
         exclusively on its own short-circuit path in
         _generate_image_if_triggered) and see the result before continuing,
-        up to MAX_TOOL_ITERATIONS rounds.
+        up to MAX_TOOL_ITERATIONS rounds — or until this session (``turn_id``
+        is the session_id) has spent its whole-conversation tool-call budget,
+        whichever comes first.
 
         Yields {"delta": text} chunks as they stream — first-token latency
         for the common no-tool-call reply is unaffected, since
         engine.generate() only ever buffers when it actually captures a
         tool-call span (see mlx_driver._split_tool_call) — then a final
         {"used_tools": [...]} event once the loop ends (no more tool calls,
-        or the round cap was hit).
+        the round cap was hit, or the session budget ran out).
         """
         tool_specs = None
-        if use_tools:
+        if use_tools and self._session_tool_call_counts.get(turn_id, 0) < self.MAX_TOOL_CALLS_PER_SESSION:
             tool_specs = [s for s in self.tools.specs(enabled_only=True)
                          if s["function"]["name"] != "image_generation"] or None
         used_tools: list[str] = []
@@ -543,6 +569,8 @@ class SidecarService:
                         })
                         result = self.tools.dispatch(name, arguments, turn_id=turn_id)
                         used_tools.append(name)
+                        self._session_tool_call_counts[turn_id] = (
+                            self._session_tool_call_counts.get(turn_id, 0) + 1)
                         tool_result_msgs.append({
                             "role": "tool", "tool_call_id": call_id,
                             "content": json.dumps(
@@ -551,6 +579,10 @@ class SidecarService:
                     msgs.append(tool_calls_msg)
                     msgs.extend(tool_result_msgs)
                     got_tool_call = True
+                    # Budget may have just been exhausted by the calls above —
+                    # stop offering tools for any further round in this turn.
+                    if self._session_tool_call_counts.get(turn_id, 0) >= self.MAX_TOOL_CALLS_PER_SESSION:
+                        tool_specs = None
                     break
                 elif chunk:
                     yield {"delta": chunk}

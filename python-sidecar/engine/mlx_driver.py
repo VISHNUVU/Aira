@@ -373,27 +373,74 @@ class MLXDriver(EngineDriver):
             raise EngineError("No model loaded. Call load() first.")
 
         if self._vlm_mode:
-            yield from _filter_tool_call_leak(_filter_channel_tags(self._generate_vlm(
-                messages, max_tokens=max_tokens, temperature=temperature, stream=stream)))
-            return
+            text_stream = _filter_channel_tags(self._generate_vlm(
+                messages, max_tokens=max_tokens, temperature=temperature,
+                tools=tools, stream=stream))
+        else:
+            text_stream = _filter_channel_tags(self._generate_lm(
+                messages, max_tokens=max_tokens, temperature=temperature,
+                tools=tools, stream=stream))
 
-        text_stream = _filter_channel_tags(self._generate_lm(
-            messages, max_tokens=max_tokens, temperature=temperature,
-            tools=tools, stream=stream))
-        if tools and getattr(self._tokenizer, "has_tool_calling", False):
+        resolved = self._resolve_tool_calling() if tools else None
+        if resolved:
             # Real tool specs were offered and this checkpoint can natively
             # emit tool-call syntax — capture a complete call instead of
             # truncating it (see _split_tool_call's docstring). Falls back
             # to the truncating filter below for every other case (no tools
             # passed, or a checkpoint/tokenizer with no tool-parser) so
             # every existing tools=None call site is completely unaffected.
-            yield from _split_tool_call(
-                text_stream,
-                self._tokenizer.tool_call_start,
-                self._tokenizer.tool_call_end,
-            )
+            tool_call_start, tool_call_end, _parser = resolved
+            yield from _split_tool_call(text_stream, tool_call_start, tool_call_end)
             return
         yield from _filter_tool_call_leak(text_stream)
+
+    def _resolve_tool_calling(self):
+        """Returns ``(tool_call_start, tool_call_end, parse_fn)`` if the
+        loaded checkpoint supports native tool-calling, else ``None``.
+
+        Works for both loaders. ``mlx_lm.load()`` populates
+        ``has_tool_calling``/``tool_call_start``/``tool_call_end``/
+        ``tool_parser`` on the tokenizer automatically (by scanning its own
+        chat template for known tool-call syntax — see
+        ``mlx_lm.tokenizer_utils._infer_tool_parser``), but ``mlx_vlm.load()``
+        never runs that same post-processing on the processor it returns —
+        confirmed live: a real Gemma-4 unified checkpoint's VLM processor (and
+        its nested tokenizer) has none of those four attributes at all, even
+        though its chat template is byte-for-byte the same Gemma-4 template
+        mlx_lm's loader would populate them from. Without this, every real
+        checkpoint in this app (all unified/multimodal exports — see
+        _is_multimodal_checkpoint) silently never gets to use the
+        tool-calling loop at all, regardless of what's passed to
+        generate(tools=...): this was a real, confirmed-live gap, not a
+        hypothetical one.
+
+        Re-derives the same thing from the chat template text directly in
+        VLM mode rather than trusting attributes that don't exist there.
+        Only Gemma 4's own tag syntax is checked (the only model family this
+        app ships), reusing mlx_lm's own well-tested parser module rather
+        than reimplementing the parsing logic.
+        """
+        if not self._vlm_mode:
+            if getattr(self._tokenizer, "has_tool_calling", False):
+                return (
+                    self._tokenizer.tool_call_start,
+                    self._tokenizer.tool_call_end,
+                    self._tokenizer.tool_parser,
+                )
+            return None
+
+        chat_template = getattr(self._tokenizer, "chat_template", None)
+        if chat_template is None:
+            inner = getattr(self._tokenizer, "tokenizer", None)
+            chat_template = getattr(inner, "chat_template", None)
+        if (
+            isinstance(chat_template, str)
+            and "<|tool_call>" in chat_template
+            and "<tool_call|>" in chat_template
+        ):
+            from mlx_lm.tool_parsers import gemma4
+            return (gemma4.tool_call_start, gemma4.tool_call_end, gemma4.parse_tool_call)
+        return None
 
     def _generate_lm(self, messages, *, max_tokens, temperature, tools, stream):
         from mlx_lm import stream_generate
@@ -462,12 +509,17 @@ class MLXDriver(EngineDriver):
         return tokens[n:]
 
     def _generate_vlm(self, messages: list[dict], *, max_tokens: int,
-                      temperature: float, stream: bool) -> Iterator[str]:
+                      temperature: float, tools: Optional[list[dict]] = None,
+                      stream: bool) -> Iterator[str]:
         """Text-only chat through mlx-vlm, for unified/omni checkpoints.
 
-        Native tool-call specs aren't wired through mlx-vlm's chat template
-        (no `tools=` kwarg in `apply_chat_template` here) — function calling
-        is a known gap for these checkpoints until mlx-vlm exposes it.
+        `apply_chat_template(..., tools=tools)` — contrary to this method's
+        old assumption that mlx-vlm doesn't support tool specs at all,
+        `mlx_vlm.prompt_utils.get_chat_template` forwards arbitrary `**kwargs`
+        straight through to the real tokenizer's own `apply_chat_template`
+        (confirmed by reading mlx_vlm 0.6.3's source directly), which is the
+        exact same Gemma-4 Jinja template mlx_lm's plain loader uses — so
+        `tools=` renders into the prompt here exactly like it does there.
 
         `prompt_cache_state` is mlx_vlm's built-in cross-turn KV cache: it
         finds the shared token prefix with the previous turn itself and only
@@ -476,7 +528,8 @@ class MLXDriver(EngineDriver):
         import mlx_vlm
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        prompt = apply_chat_template(self._tokenizer, self._vlm_config, messages)
+        tmpl_kw = {"tools": tools} if tools else {}
+        prompt = apply_chat_template(self._tokenizer, self._vlm_config, messages, **tmpl_kw)
         chunks: list[str] = []
         for resp in mlx_vlm.stream_generate(
             self._model, self._tokenizer, prompt,
@@ -493,21 +546,23 @@ class MLXDriver(EngineDriver):
     def parse_tool_calls(
         self, text: str, tools: Optional[list[dict]] = None
     ) -> list[dict]:
-        """Parse a captured tool-call span via the tokenizer's own dormant
-        tool_parser (populated by mlx_lm.load() for any checkpoint whose
-        chat template declares native tool-calling — e.g. Gemma 4's
-        mlx_lm.tool_parsers.gemma4 — but never invoked anywhere else in this
-        codebase before this loop existed).
+        """Parse a captured tool-call span via `_resolve_tool_calling()` —
+        routes to the same parser (e.g. Gemma 4's mlx_lm.tool_parsers.gemma4)
+        regardless of whether this checkpoint loaded through mlx_lm or
+        mlx_vlm (see that method's docstring for why VLM mode can't just
+        trust `self._tokenizer.has_tool_calling`/`.tool_parser` directly).
 
         The real parser raises ValueError("No function provided.") rather
         than returning an empty result when nothing matches, and returns a
         bare dict for a single call but a list for multiple — both
         normalized here so callers always get a plain list.
         """
-        if not getattr(self._tokenizer, "has_tool_calling", False):
+        resolved = self._resolve_tool_calling()
+        if not resolved:
             return []
+        _start, _end, parser = resolved
         try:
-            result = self._tokenizer.tool_parser(text, tools)
+            result = parser(text, tools)
         except ValueError:
             return []
         if result is None:
@@ -777,4 +832,9 @@ class MLXDriver(EngineDriver):
             supports_adapters=True,
             device="metal",
             notes="Apple Silicon only. On-device QLoRA supported.",
+            # Safe to call with no model loaded — _resolve_tool_calling()
+            # tolerates self._tokenizer being None (getattr(...) on None
+            # just returns the default), so this doesn't need a separate
+            # "is a model loaded" guard.
+            supports_tool_calling=self._resolve_tool_calling() is not None,
         )

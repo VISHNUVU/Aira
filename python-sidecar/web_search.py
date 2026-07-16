@@ -3,11 +3,12 @@
 Everything else in this app is explicitly offline-first (memory, skills,
 persona, chat). Search is different by necessity, so it's held to a higher
 bar: off by default (registered as a Tool with ``enabled=False``, same
-pattern as ``run_shell``), and invoked deterministically — see
-``extract_search_query`` — rather than trusting the model to correctly emit
-a native function-call. That native path is unreliable here anyway: the
-VLM-mode driver used by the recommended 12B/e4b checkpoints never even
-receives tool specs (see engine/mlx_driver.py's ``_generate_vlm``).
+pattern as ``run_shell``), and *also* invoked deterministically — see
+``extract_search_query`` — as a fast-path alongside the model's own native
+tool-calling (which does work correctly now, including in VLM mode — see
+engine/mlx_driver.py's ``_resolve_tool_calling``), not because that path is
+unreliable. The deterministic trigger fires on an exact phrasing without
+depending on the model's judgment; native calling covers everything else.
 
 Uses DuckDuckGo's HTML endpoint because it needs no API key or signup —
 consistent with every other capability in Aria shipping zero-config.

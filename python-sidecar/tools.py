@@ -171,6 +171,36 @@ def make_file_search_tool(memory) -> Tool:
     )
 
 
+def make_save_memory_tool(memory) -> Tool:
+    """Lets the model itself save a fact to memory mid-conversation, rather
+    than only the heuristic auto-save (app.py's extract_auto_facts, a small
+    fixed set of self-disclosure patterns) or the manual "save to memory"
+    button in the UI. On by default, same as file_search/current_time —
+    writing to the user's own local, on-device memory store carries none of
+    web_search's off-device-network or run_shell's arbitrary-execution risk,
+    so it doesn't need the same enabled=False-by-default treatment."""
+    def save_memory(fact: str) -> dict:
+        ids = memory.ingest_text(fact, source="assistant")
+        return {"saved": True, "chunks_added": len(ids)}
+
+    return Tool(
+        name="save_memory",
+        description="Save a fact the user shared or you learned about them "
+                    "to long-term memory, so it's remembered in future "
+                    "conversations. Use this when the user tells you "
+                    "something worth remembering that isn't already stored.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "fact": {"type": "string",
+                         "description": "the fact to remember, written plainly"},
+            },
+            "required": ["fact"],
+        },
+        func=save_memory,
+    )
+
+
 def make_current_time_tool() -> Tool:
     def current_time(timezone: str = "local") -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime())
@@ -277,6 +307,7 @@ def default_registry(store: Store, memory=None, images_dir: str = None) -> ToolR
     reg = ToolRegistry(store)
     if memory is not None:
         reg.register(make_file_search_tool(memory))
+        reg.register(make_save_memory_tool(memory))
     reg.register(make_current_time_tool())
     reg.register(make_shell_tool())   # present but disabled
     reg.register(make_web_search_tool())  # present but disabled

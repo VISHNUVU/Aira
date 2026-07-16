@@ -45,6 +45,17 @@ command -v cargo   >/dev/null    || die "Rust/Cargo not found. Install: https://
 command -v npm     >/dev/null    || die "Node/npm not found. Install: https://nodejs.org"
 ok "Apple Silicon macOS, python3 + cargo + npm present"
 
+# APP_VERSION (python-sidecar/app.py) and tauri.conf.json's "version" are two
+# separately hand-maintained strings with a comment on each saying "keep in
+# lockstep" — nothing previously enforced that, so a future release could
+# silently ship with the sidecar and the .app bundle's Info.plist reporting
+# two different version numbers. Fail loudly here instead.
+SIDECAR_VERSION="$(python3 -c "import re; print(re.search(r'APP_VERSION = \"([^\"]+)\"', open('$SIDECAR_DIR/app.py').read()).group(1))")"
+TAURI_VERSION="$(python3 -c "import json; print(json.load(open('$ROOT/src-tauri/tauri.conf.json'))['version'])")"
+[[ "$SIDECAR_VERSION" == "$TAURI_VERSION" ]] || die \
+  "version drift: python-sidecar/app.py's APP_VERSION ($SIDECAR_VERSION) != src-tauri/tauri.conf.json's version ($TAURI_VERSION) — fix one before building"
+ok "version in sync: $SIDECAR_VERSION"
+
 # --- 1. freeze the Python sidecar ------------------------------------------
 say "Freezing Python sidecar (PyInstaller)"
 cd "$SIDECAR_DIR"

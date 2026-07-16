@@ -112,6 +112,42 @@ def test_file_search_tool_over_memory():
         assert r.result[0]["source"] == "geo.txt"
 
 
+def test_save_memory_tool_writes_to_the_real_memory_store():
+    from engine import make_engine
+    from memory import Memory, InMemoryVectorStore
+    import tempfile
+    from tools import make_save_memory_tool
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Store(":memory:")
+        eng = make_engine("fake", tmp + "/m", tmp + "/a", dim=64)
+        eng.load("gemma-4-e4b")
+        mem = Memory(store, eng, InMemoryVectorStore())
+        reg = ToolRegistry(store)
+        reg.register(make_save_memory_tool(mem))
+        r = reg.dispatch("save_memory", {"fact": "The user's dog is named Comet."})
+        assert r.ok and r.result["saved"] is True and r.result["chunks_added"] >= 1
+        # Actually retrievable afterward, not just reported as saved.
+        hits = mem.retrieve("what is the user's dog's name", k=3)
+        assert any("Comet" in h.text for h in hits)
+
+
+def test_default_registry_registers_save_memory_only_with_memory():
+    reg_without = default_registry(Store(":memory:"))
+    assert reg_without.get("save_memory") is None
+
+    from engine import make_engine
+    from memory import Memory, InMemoryVectorStore
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Store(":memory:")
+        eng = make_engine("fake", tmp + "/m", tmp + "/a", dim=64)
+        eng.load("gemma-4-e4b")
+        mem = Memory(store, eng, InMemoryVectorStore())
+        reg_with = default_registry(store, memory=mem)
+        tool = reg_with.get("save_memory")
+        assert tool is not None and tool.enabled is True and tool.dangerous is False
+
+
 def test_current_time_tool():
     reg = ToolRegistry(Store(":memory:"))
     reg.register(make_current_time_tool())
