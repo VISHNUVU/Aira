@@ -260,6 +260,29 @@ def test_set_adapter_without_load_raises():
         pass
 
 
+# ---- packaging: huggingface_hub must actually be installable on Windows ---
+
+def test_llamacpp_extras_declare_huggingface_hub():
+    # Regression: download() imports huggingface_hub directly, but neither
+    # llama-cpp-python nor lancedb/pyarrow depend on it — a real shipped bug
+    # where `pip install -e ".[llamacpp,memory]"` (what build-windows.ps1
+    # runs) never installed it, so every model download on Windows failed
+    # immediately with "huggingface_hub isn't available in this build".
+    # Plain text scan (not a TOML parser) so this doesn't need tomllib
+    # (3.11+ only) or an extra tomli dependency just for one test.
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"))
+    with open(root) as f:
+        content = f.read()
+    start = content.index("llamacpp = [")
+    end = content.index("]", start)
+    block = content[start:end]
+    assert "huggingface_hub" in block, (
+        "llamacpp extras must declare huggingface_hub explicitly — "
+        "LlamaCppDriver.download() imports it directly and nothing else "
+        "in that extras group pulls it in transitively"
+    )
+
+
 # ---- real smoke test (opt-in, needs network + a real GGUF download) --------
 
 def test_real_gguf_end_to_end():
