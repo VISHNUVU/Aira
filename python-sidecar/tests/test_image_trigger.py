@@ -37,6 +37,16 @@ def test_strips_trailing_punctuation():
     assert extract_image_prompt("generate an image of a house.") == "a house"
 
 
+def test_tolerates_article_glued_onto_noun():
+    # Regression: a real live failure where the user typo'd "an aimage"
+    # (article glued onto the noun) and the whole deterministic trigger
+    # missed, silently falling through to the plain chat model instead of
+    # actually generating an image.
+    assert extract_image_prompt("Create an aimage of a frog siting on a car") == "a frog siting on a car"
+    assert extract_image_prompt("draw a apicture of a dragon") == "a dragon"
+    assert extract_image_prompt("generate a aphoto of a beach") == "a beach"
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
